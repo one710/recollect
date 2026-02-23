@@ -15,6 +15,7 @@ export function countTokens(text: string): number {
  */
 export function countMessagesTokens(
   messages: { role: string; content: string }[],
+  counter: (text: string) => number = countTokens,
 ): number {
-  return messages.reduce((acc, m) => acc + countTokens(m.content) + 4, 0); // Adding minor overhead for role/formatting
+  return messages.reduce((acc, m) => acc + counter(m.content) + 4, 0); // Adding minor overhead for role/formatting
 }

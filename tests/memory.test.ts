@@ -10,16 +10,19 @@ import { MemoryLayer } from "../src/memory.js";
 
 describe("MemoryLayer", () => {
   const mockModel: any = {
-    specificationVersion: "v2",
+    specificationVersion: "v3",
     modelId: "mock-model",
     provider: "mock-provider",
     doGenerate: jest.fn<any>().mockResolvedValue({
       text: "Mocked summary",
-      finishReason: "stop",
-      usage: { promptTokens: 10, completionTokens: 5 },
-      rawCall: { rawPrompt: "...", rawSettings: {} },
       content: [{ type: "text", text: "Mocked summary" }],
+      finishReason: "stop",
+      usage: {
+        inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 5, text: 5, reasoning: 0 },
+      },
       warnings: [],
+      rawCall: { rawPrompt: "...", rawSettings: {} },
     }),
   };
 
@@ -74,5 +77,26 @@ describe("MemoryLayer", () => {
     await memory.clearSession(sessionId);
     const history = await memory.getMessages(sessionId);
     expect(history.length).toBe(0);
+  });
+
+  test("should use custom countTokens if provided in options", async () => {
+    const customSessionId = "custom-tokenizer-" + Date.now();
+    const mockCounter = jest
+      .fn<(text: string) => number>()
+      .mockReturnValue(100);
+    const customMemory = new MemoryLayer({
+      maxTokens: 50,
+      summarizationModel: mockModel,
+      countTokens: mockCounter,
+    });
+
+    await customMemory.addMessage(customSessionId, "user", "Hello");
+    // Should trigger summarization immediately because mockCounter returns 100 > 50 * 0.9
+    const history = await customMemory.getMessages(customSessionId);
+    expect(history.length).toBe(1);
+    expect(history[0]?.role).toBe("system");
+    expect(mockCounter).toHaveBeenCalledWith("Hello");
+
+    await customMemory.dispose();
   });
 });

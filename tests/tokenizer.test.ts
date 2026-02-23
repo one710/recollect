@@ -18,4 +18,12 @@ describe("Tokenizer", () => {
     // Hello (1) + Hi there! (3) + 2 * overhead (4) = 12
     expect(count).toBe(12);
   });
+
+  test("countMessagesTokens should use custom counter if provided", () => {
+    const messages = [{ role: "user", content: "Hello" }];
+    const customCounter = (text: string) => text.length;
+    const count = countMessagesTokens(messages, customCounter);
+    // "Hello" (5) + overhead (4) = 9
+    expect(count).toBe(9);
+  });
 });

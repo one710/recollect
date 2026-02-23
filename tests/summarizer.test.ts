@@ -3,19 +3,21 @@ import { summarizeConversation } from "../src/summarizer.js";
 
 describe("Summarizer", () => {
   const mockModel: any = {
-    specificationVersion: "v2",
+    specificationVersion: "v3",
     modelId: "mock-model",
     provider: "mock-provider",
     doGenerate: jest.fn<any>().mockResolvedValue({
       text: "Mocked summary",
-      finishReason: "stop",
-      usage: { promptTokens: 10, completionTokens: 5 },
-      rawCall: { rawPrompt: "...", rawSettings: {} },
       content: [{ type: "text", text: "Mocked summary" }],
+      finishReason: "stop",
+      usage: {
+        inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 5, text: 5, reasoning: 0 },
+      },
       warnings: [],
+      rawCall: { rawPrompt: "...", rawSettings: {} },
     }),
   };
-
   test("summarizeConversation should call generateText and return summary", async () => {
     const messages = [
       { role: "user", content: "Hello" },

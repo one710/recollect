@@ -25,6 +25,10 @@ export interface MemoryLayerOptions {
    * Optional database path. Defaults to DATABASE_URL env var or 'dev.db'.
    */
   databasePath?: string;
+  /**
+   * Optional custom token counter function.
+   */
+  countTokens?: (text: string) => number;
 }
 
 export class MemoryLayer {
@@ -32,6 +36,7 @@ export class MemoryLayer {
   private maxTokens: number;
   private summarizationModel: LanguageModel;
   private threshold: number;
+  private customCountTokens?: ((text: string) => number) | undefined;
 
   constructor(options: MemoryLayerOptions) {
     const path =
@@ -55,6 +60,7 @@ export class MemoryLayer {
     this.maxTokens = options.maxTokens;
     this.summarizationModel = options.summarizationModel;
     this.threshold = options.threshold ?? 0.9;
+    this.customCountTokens = options.countTokens;
   }
 
   /**
@@ -75,7 +81,7 @@ export class MemoryLayer {
     const history = await this.getMessages(sessionId);
 
     // Calculate tokens
-    const tokenCount = countMessagesTokens(history);
+    const tokenCount = countMessagesTokens(history, this.customCountTokens);
 
     // Check if threshold is reached
     if (tokenCount >= this.maxTokens * this.threshold) {
