@@ -7,7 +7,7 @@ Recollect is a memory layer for AI agents that provides auto-summarizing chat hi
 - **Auto-Summarization**: Automatically replaces conversation history with a system summary when tokens reach a defined threshold (default 90%).
 - **Session-Based**: Required `sessionId` for all chat items to manage multiple independent conversations.
 - **Provider Agnostic**: Built on [AI SDK](https://ai-sdk.dev/) for compatibility with various LLM providers.
-- **Fast Token Counting**: Uses [ai-tokenizer](https://github.com/coder/ai-tokenizer) for high-performance token estimation.
+- **Fast Token Counting**: Uses [ai-tokenizer](https://github.com/coder/ai-tokenizer) by default, but supports custom implementations.
 - **Persistent Storage**: Uses Node.js's native `node:sqlite` for simple and reliable storage with zero external database dependencies.
 
 ## Installation
@@ -54,6 +54,8 @@ The `MemoryLayer` constructor accepts the following options:
 - `maxTokens`: (Required) The maximum number of tokens allowed in history.
 - `summarizationModel`: (Required) The AI SDK model used to generate summaries.
 - `threshold`: (Optional) The percentage (0.0 to 1.0) of `maxTokens` that triggers summarization. Defaults to `0.9`.
+- `countTokens`: (Optional) A custom function `(text: string) => number` to count tokens. Defaults to the internal `ai-tokenizer` logic.
+- `databasePath`: (Optional) Path to the SQLite database.
 
 ## Development
 
