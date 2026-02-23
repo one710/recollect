@@ -1,9 +1,25 @@
 {
   "name": "@one710/recollect",
   "version": "1.0.0",
-  "description": "",
+  "description": "Auto-summarizing memory layer for AI agents using Node.js native SQLite.",
   "license": "MIT",
-  "author": "",
+  "author": "one710",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/one710/recollect.git"
+  },
+  "bugs": {
+    "url": "https://github.com/one710/recollect/issues"
+  },
+  "homepage": "https://github.com/one710/recollect#readme",
+  "keywords": [
+    "ai",
+    "memory",
+    "summarization",
+    "sqlite",
+    "ai-sdk",
+    "history"
+  ],
   "type": "module",
   "main": "./dist/lib.js",
   "types": "./dist/lib.d.ts",
