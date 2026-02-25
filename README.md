@@ -5,10 +5,11 @@ Recollect is a memory layer for AI agents that provides auto-summarizing chat hi
 ## Features
 
 - **Auto-Summarization**: Automatically replaces conversation history with a system summary when tokens reach a defined threshold (default 90%).
-- **Session-Based**: Required `sessionId` for all chat items to manage multiple independent conversations.
-- **Provider Agnostic**: Built on [AI SDK](https://ai-sdk.dev/) for compatibility with various LLM providers.
+- **Full Message History**: Supports complex [AI SDK](https://ai-sdk.dev/) message types (`ModelMessage`), including multi-part content (text, images, files), tool calls, and tool results.
+- **Session-Based**: Manage multiple independent conversations using unique session IDs.
+- **Provider Agnostic**: Works with any LLM provider supported by many AI SDK.
 - **Fast Token Counting**: Uses [ai-tokenizer](https://github.com/coder/ai-tokenizer) by default, but supports custom implementations.
-- **Persistent Storage**: Uses Node.js's native `node:sqlite` for simple and reliable storage with zero external database dependencies.
+- **Persistent Storage**: Uses Node.js's native `node:sqlite` with zero external dependencies.
 
 ## Installation
 
@@ -34,7 +35,7 @@ const memory = new MemoryLayer({
 
 const sessionId = "user-123-chat-456";
 
-// Add messages
+// Add messages using role and content
 await memory.addMessage(sessionId, "user", "What is the capital of France?");
 await memory.addMessage(
   sessionId,
@@ -42,7 +43,30 @@ await memory.addMessage(
   "The capital of France is Paris.",
 );
 
-// Fetch chat history
+// Add complex messages using full AI SDK message objects
+await memory.addMessage(sessionId, null, {
+  role: "user",
+  content: [
+    { type: "text", text: "What is in this image?" },
+    { type: "image", image: "https://example.com/image.png" },
+  ],
+});
+
+// Supports tool calls and tool results automatically
+await memory.addMessage(sessionId, null, {
+  role: "assistant",
+  content: "Let me check the weather.",
+  toolCalls: [
+    {
+      type: "tool-call",
+      toolCallId: "call-1",
+      toolName: "getWeather",
+      args: { city: "Paris" },
+    },
+  ],
+});
+
+// Fetch chat history (returns ModelMessage[])
 const history = await memory.getMessages(sessionId);
 console.log(history);
 ```
@@ -57,9 +81,17 @@ The `MemoryLayer` constructor accepts the following options:
 - `countTokens`: (Optional) A custom function `(text: string) => number` to count tokens. Defaults to the internal `ai-tokenizer` logic.
 - `databasePath`: (Optional) Path to the SQLite database.
 
-## Development
+### memory.addMessage(sessionId, role?, contentOrMessage)
 
-### Prerequisites
+Adds a message to the chat history.
+
+- `sessionId`: (Required) The session ID for the conversation.
+- `role`: (Optional) The message role (`user`, `assistant`, `system`, etc.). If `null`, `contentOrMessage` must be a full AI SDK message object.
+- `contentOrMessage`: (Required) Either a string (if `role` is provided) or a full `ModelMessage` object (if `role` is `null`).
+
+### memory.getMessages(sessionId)
+
+Returns the full chat history for a session as an array of `ModelMessage`.
 
 - Node.js v22.5.0 or higher (for native `node:sqlite` support)
 - SQLite (built-in to Node.js)

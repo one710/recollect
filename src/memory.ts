@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite");
-import type { LanguageModel } from "ai";
+import type { LanguageModel, ModelMessage } from "ai";
 import { countMessagesTokens } from "./tokenizer.js";
 import { summarizeConversation } from "./summarizer.js";
 
@@ -45,17 +45,27 @@ export class MemoryLayer {
       "dev.db";
     this.db = new DatabaseSync(path);
 
-    // Initialize schema
+    // Initialize schema with 'data' column for full AI SDK message objects
     this.db.exec(`
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sessionId TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                data TEXT,
                 createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_session_id ON messages(sessionId);
         `);
+
+    // Migration: Add 'data' column if it doesn't exist (for existing databases)
+    const tableInfo = this.db.prepare("PRAGMA table_info(messages)").all() as {
+      name: string;
+    }[];
+    const hasDataColumn = tableInfo.some((col) => col.name === "data");
+    if (!hasDataColumn) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN data TEXT");
+    }
 
     this.maxTokens = options.maxTokens;
     this.summarizationModel = options.summarizationModel;
@@ -68,14 +78,38 @@ export class MemoryLayer {
    */
   async addMessage(
     sessionId: string,
-    role: "user" | "assistant" | "system",
-    content: string,
+    role: ModelMessage["role"] | null,
+    contentOrMessage: string | ModelMessage,
   ): Promise<void> {
+    let message: ModelMessage;
+
+    if (role === null) {
+      if (typeof contentOrMessage === "string") {
+        throw new Error("Message object is required when role is null.");
+      }
+      message = contentOrMessage;
+    } else {
+      if (typeof contentOrMessage !== "string") {
+        throw new Error("Content string is required when role is specified.");
+      }
+      message = {
+        role: role as any,
+        content: contentOrMessage as any,
+      } as ModelMessage;
+    }
+
     // Store the new message
     const stmt = this.db.prepare(
-      "INSERT INTO messages (sessionId, role, content) VALUES (?, ?, ?)",
+      "INSERT INTO messages (sessionId, role, content, data) VALUES (?, ?, ?, ?)",
     );
-    stmt.run(sessionId, role, content);
+    stmt.run(
+      sessionId,
+      message.role,
+      typeof message.content === "string"
+        ? message.content
+        : JSON.stringify(message.content),
+      JSON.stringify(message),
+    );
 
     // Fetch the current session history
     const history = await this.getMessages(sessionId);
@@ -92,18 +126,26 @@ export class MemoryLayer {
   /**
    * Fetches the current chat history for a session.
    */
-  async getMessages(
-    sessionId: string,
-  ): Promise<{ role: "user" | "assistant" | "system"; content: string }[]> {
+  async getMessages(sessionId: string): Promise<ModelMessage[]> {
     const stmt = this.db.prepare(
-      "SELECT role, content FROM messages WHERE sessionId = ? ORDER BY createdAt ASC",
+      "SELECT role, content, data FROM messages WHERE sessionId = ? ORDER BY createdAt ASC",
     );
-    const rows = stmt.all(sessionId) as { role: string; content: string }[];
+    const rows = stmt.all(sessionId) as {
+      role: string;
+      content: string;
+      data: string | null;
+    }[];
 
-    return rows.map((m) => ({
-      role: m.role as "user" | "assistant" | "system",
-      content: m.content,
-    }));
+    return rows.map((m) => {
+      if (m.data) {
+        return JSON.parse(m.data) as ModelMessage;
+      }
+      // Backward compatibility for rows without 'data' column populated
+      return {
+        role: m.role as any,
+        content: m.content as any,
+      } as ModelMessage;
+    });
   }
 
   /**
@@ -111,7 +153,7 @@ export class MemoryLayer {
    */
   private async performSummarization(
     sessionId: string,
-    history: { role: "user" | "assistant" | "system"; content: string }[],
+    history: ModelMessage[],
   ): Promise<void> {
     const summary = await summarizeConversation(
       history,
@@ -125,10 +167,20 @@ export class MemoryLayer {
     deleteStmt.run(sessionId);
 
     // Insert the summary as a system message
+    const summaryMessage: ModelMessage = {
+      role: "system",
+      content: `Conversation Summary:\n\n${summary}`,
+    };
+
     const insertStmt = this.db.prepare(
-      "INSERT INTO messages (sessionId, role, content) VALUES (?, ?, ?)",
+      "INSERT INTO messages (sessionId, role, content, data) VALUES (?, ?, ?, ?)",
     );
-    insertStmt.run(sessionId, "system", `Conversation Summary: ${summary}`);
+    insertStmt.run(
+      sessionId,
+      summaryMessage.role,
+      summaryMessage.content as string,
+      JSON.stringify(summaryMessage),
+    );
   }
 
   /**
