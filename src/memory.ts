@@ -1,8 +1,5 @@
 import "dotenv/config";
-import { createRequire } from "node:module";
-import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-const require = createRequire(import.meta.url);
-const { DatabaseSync } = require("node:sqlite");
+import sqlite3 from "sqlite3";
 import type { LanguageModel, ModelMessage } from "ai";
 import { countMessagesTokens } from "./tokenizer.js";
 import { summarizeConversation } from "./summarizer.js";
@@ -32,7 +29,7 @@ export interface MemoryLayerOptions {
 }
 
 export class MemoryLayer {
-  private db: DatabaseSyncType;
+  private db: sqlite3.Database;
   private maxTokens: number;
   private summarizationModel: LanguageModel;
   private threshold: number;
@@ -43,34 +40,60 @@ export class MemoryLayer {
       options.databasePath ||
       process.env.DATABASE_URL?.replace("file:", "") ||
       "dev.db";
-    this.db = new DatabaseSync(path);
+    this.db = new sqlite3.Database(path);
 
-    // Initialize schema with 'data' column for full AI SDK message objects
-    this.db.exec(`
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sessionId TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                data TEXT,
-                createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_session_id ON messages(sessionId);
-        `);
-
-    // Migration: Add 'data' column if it doesn't exist (for existing databases)
-    const tableInfo = this.db.prepare("PRAGMA table_info(messages)").all() as {
-      name: string;
-    }[];
-    const hasDataColumn = tableInfo.some((col) => col.name === "data");
-    if (!hasDataColumn) {
-      this.db.exec("ALTER TABLE messages ADD COLUMN data TEXT");
-    }
+    this.initSchema();
 
     this.maxTokens = options.maxTokens;
     this.summarizationModel = options.summarizationModel;
     this.threshold = options.threshold ?? 0.9;
     this.customCountTokens = options.countTokens;
+  }
+
+  private initSchema(): void {
+    this.db.serialize(() => {
+      // Initialize schema with 'data' column for full AI SDK message objects
+      this.db.run(`
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sessionId TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    data TEXT,
+                    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+            `);
+      this.db.run(`
+                CREATE INDEX IF NOT EXISTS idx_session_id ON messages(sessionId);
+            `);
+
+      // Migration: Add 'data' column if it doesn't exist (for existing databases)
+      this.db.all("PRAGMA table_info(messages)", (err, rows: any[]) => {
+        if (err) return;
+        const hasDataColumn = rows.some((col) => col.name === "data");
+        if (!hasDataColumn) {
+          this.db.run("ALTER TABLE messages ADD COLUMN data TEXT");
+        }
+      });
+    });
+  }
+
+  private run(sql: string, params: any[] = []): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  private all<T>(sql: string, params: any[] = []): Promise<T[]> {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows as T[]);
+      });
+    });
   }
 
   /**
@@ -99,16 +122,16 @@ export class MemoryLayer {
     }
 
     // Store the new message
-    const stmt = this.db.prepare(
+    await this.run(
       "INSERT INTO messages (sessionId, role, content, data) VALUES (?, ?, ?, ?)",
-    );
-    stmt.run(
-      sessionId,
-      message.role,
-      typeof message.content === "string"
-        ? message.content
-        : JSON.stringify(message.content),
-      JSON.stringify(message),
+      [
+        sessionId,
+        message.role,
+        typeof message.content === "string"
+          ? message.content
+          : JSON.stringify(message.content),
+        JSON.stringify(message),
+      ],
     );
 
     // Fetch the current session history
@@ -127,14 +150,14 @@ export class MemoryLayer {
    * Fetches the current chat history for a session.
    */
   async getMessages(sessionId: string): Promise<ModelMessage[]> {
-    const stmt = this.db.prepare(
-      "SELECT role, content, data FROM messages WHERE sessionId = ? ORDER BY createdAt ASC",
-    );
-    const rows = stmt.all(sessionId) as {
+    const rows = await this.all<{
       role: string;
       content: string;
       data: string | null;
-    }[];
+    }>(
+      "SELECT role, content, data FROM messages WHERE sessionId = ? ORDER BY createdAt ASC",
+      [sessionId],
+    );
 
     return rows.map((m) => {
       if (m.data) {
@@ -161,25 +184,22 @@ export class MemoryLayer {
     );
 
     // Delete all existing messages for this session
-    const deleteStmt = this.db.prepare(
-      "DELETE FROM messages WHERE sessionId = ?",
-    );
-    deleteStmt.run(sessionId);
+    await this.run("DELETE FROM messages WHERE sessionId = ?", [sessionId]);
 
     // Insert the summary as a system message
     const summaryMessage: ModelMessage = {
       role: "system",
-      content: `Conversation Summary:\n\n${summary}`,
+      content: `Conversation Summary: ${summary}`,
     };
 
-    const insertStmt = this.db.prepare(
+    await this.run(
       "INSERT INTO messages (sessionId, role, content, data) VALUES (?, ?, ?, ?)",
-    );
-    insertStmt.run(
-      sessionId,
-      summaryMessage.role,
-      summaryMessage.content as string,
-      JSON.stringify(summaryMessage),
+      [
+        sessionId,
+        summaryMessage.role,
+        summaryMessage.content as string,
+        JSON.stringify(summaryMessage),
+      ],
     );
   }
 
@@ -187,14 +207,18 @@ export class MemoryLayer {
    * Clears the chat history for a session.
    */
   async clearSession(sessionId: string): Promise<void> {
-    const stmt = this.db.prepare("DELETE FROM messages WHERE sessionId = ?");
-    stmt.run(sessionId);
+    await this.run("DELETE FROM messages WHERE sessionId = ?", [sessionId]);
   }
 
   /**
    * Closes the database connection.
    */
   async dispose(): Promise<void> {
-    this.db.close();
+    return new Promise((resolve, reject) => {
+      this.db.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
   }
 }

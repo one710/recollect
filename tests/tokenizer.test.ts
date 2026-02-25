@@ -1,5 +1,6 @@
 import { describe, test, expect } from "@jest/globals";
 import { countTokens, countMessagesTokens } from "../src/tokenizer.js";
+import type { ModelMessage } from "ai";
 
 describe("Tokenizer", () => {
   test("countTokens should count tokens in a string", () => {
@@ -14,7 +15,7 @@ describe("Tokenizer", () => {
       { role: "user", content: "Hello" },
       { role: "assistant", content: "Hi there!" },
     ];
-    const count = countMessagesTokens(messages);
+    const count = countMessagesTokens(messages as ModelMessage[]);
     // Hello (1) + Hi there! (3) + 2 * overhead (4) = 12
     expect(count).toBe(12);
   });
@@ -22,7 +23,10 @@ describe("Tokenizer", () => {
   test("countMessagesTokens should use custom counter if provided", () => {
     const messages = [{ role: "user", content: "Hello" }];
     const customCounter = (text: string) => text.length;
-    const count = countMessagesTokens(messages, customCounter);
+    const count = countMessagesTokens(
+      messages as ModelMessage[],
+      customCounter,
+    );
     // "Hello" (5) + overhead (4) = 9
     expect(count).toBe(9);
   });

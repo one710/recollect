@@ -1,5 +1,6 @@
 import { jest, describe, test, expect } from "@jest/globals";
 import { summarizeConversation } from "../src/summarizer.js";
+import type { ModelMessage } from "ai";
 
 describe("Summarizer", () => {
   const mockModel: any = {
@@ -23,7 +24,10 @@ describe("Summarizer", () => {
       { role: "user", content: "Hello" },
       { role: "assistant", content: "Hi!" },
     ];
-    const summary = await summarizeConversation(messages, mockModel);
+    const summary = await summarizeConversation(
+      messages as ModelMessage[],
+      mockModel,
+    );
 
     expect(summary).toBe("Mocked summary");
     expect(mockModel.doGenerate).toHaveBeenCalled();

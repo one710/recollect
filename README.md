@@ -7,9 +7,9 @@ Recollect is a memory layer for AI agents that provides auto-summarizing chat hi
 - **Auto-Summarization**: Automatically replaces conversation history with a system summary when tokens reach a defined threshold (default 90%).
 - **Full Message History**: Supports complex [AI SDK](https://ai-sdk.dev/) message types (`ModelMessage`), including multi-part content (text, images, files), tool calls, and tool results.
 - **Session-Based**: Manage multiple independent conversations using unique session IDs.
-- **Provider Agnostic**: Works with any LLM provider supported by many AI SDK.
+- **Provider Agnostic**: Works with any LLM provider supported by the AI SDK.
 - **Fast Token Counting**: Uses [ai-tokenizer](https://github.com/coder/ai-tokenizer) by default, but supports custom implementations.
-- **Persistent Storage**: Uses Node.js's native `node:sqlite` with zero external dependencies.
+- **Persistent Storage**: Uses `sqlite3` for reliable storage with zero external database server dependencies.
 
 ## Installation
 
@@ -93,8 +93,12 @@ Adds a message to the chat history.
 
 Returns the full chat history for a session as an array of `ModelMessage`.
 
-- Node.js v22.5.0 or higher (for native `node:sqlite` support)
-- SQLite (built-in to Node.js)
+## Development
+
+### Prerequisites
+
+- Node.js v18 or higher
+- SQLite (via `sqlite3` npm package)
 
 ### Setup
 
