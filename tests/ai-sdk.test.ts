@@ -7,6 +7,7 @@ import {
   afterAll,
 } from "@jest/globals";
 import { MemoryLayer } from "../src/memory.js";
+import { InMemoryStorageAdapter } from "../src/storage.js";
 import type { ModelMessage } from "ai";
 
 describe("AI SDK Support", () => {
@@ -32,9 +33,13 @@ describe("AI SDK Support", () => {
 
   beforeAll(async () => {
     memory = new MemoryLayer({
-      maxTokens: 5000,
+      maxTokens: 600,
       summarizationModel: mockModel,
-      threshold: 0.1, // Trigger summary at 500 tokens
+      threshold: 0.5,
+      storage: new InMemoryStorageAdapter(),
+      keepRecentUserTurns: 2,
+      keepRecentMessagesMin: 3,
+      minimumMessagesToCompact: 2,
     });
   });
 
@@ -101,17 +106,26 @@ describe("AI SDK Support", () => {
     }
   });
 
-  test("should trigger summarization with complex messages", async () => {
+  test("should trigger compaction with complex messages", async () => {
     const largeMessage: ModelMessage = {
       role: "user",
       content: "Repeat this ".repeat(500),
     };
 
     await memory.addMessage(sessionId, null, largeMessage);
+    await memory.compactNow(sessionId);
 
     const history = await memory.getMessages(sessionId);
-    expect(history.length).toBe(1);
-    expect(history[0].role).toBe("system");
-    expect(history[0].content).toContain("Mocked tool-aware summary");
+    expect(history.length).toBeGreaterThanOrEqual(1);
+    const summary = history.find(
+      (message) =>
+        message.role === "system" &&
+        typeof message.content === "string" &&
+        message.content.includes("Conversation checkpoint summary"),
+    );
+    expect(summary).toBeDefined();
+    expect((summary as ModelMessage).content).toContain(
+      "Mocked tool-aware summary",
+    );
   });
 });

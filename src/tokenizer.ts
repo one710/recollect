@@ -49,7 +49,7 @@ export function countMessagesTokens(
     }
 
     // Handle tool results in tool messages
-    if (m.role === "tool") {
+    if (m.role === "tool" && Array.isArray(m.content)) {
       for (const result of m.content) {
         if (result.type === "tool-result") {
           const resultValue = (result as any).result ?? (result as any).output;
