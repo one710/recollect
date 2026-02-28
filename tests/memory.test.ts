@@ -52,7 +52,7 @@ describe("MemoryLayer", () => {
     const history = await memory.getMessages(sessionId);
     expect(history.length).toBe(1);
     expect(history[0]?.role).toBe("user");
-    expect(history[0]?.content).toBe("Hello");
+    expect(history[0]?.content).toEqual([{ type: "text", text: "Hello" }]);
   });
 
   test("should trigger compaction and preserve recent context", async () => {
@@ -130,44 +130,8 @@ describe("MemoryLayer", () => {
     await inMemory.dispose();
   });
 
-  test("should normalize orphan tool results in prompt view", async () => {
-    const orphanSession = "orphan-tools-" + Date.now();
-    const mem = new MemoryLayer({
-      maxTokens: 1000,
-      summarizationModel: mockModel,
-      storage: new InMemoryStorageAdapter(),
-    });
-
-    await mem.addMessages(orphanSession, [
-      { role: "user", content: "Run diagnostics" } as any,
-      {
-        role: "tool",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: "missing-call",
-            toolName: "diagnose",
-            result: { ok: false },
-          },
-        ],
-      } as any,
-    ]);
-
-    const prompt = await mem.getPromptMessages(orphanSession);
-    expect(
-      prompt.some(
-        (msg: any) =>
-          msg.role === "tool" &&
-          Array.isArray(msg.content) &&
-          msg.content.some((p: any) => p.toolCallId === "missing-call"),
-      ),
-    ).toBe(false);
-
-    await mem.dispose();
-  });
-
-  test("should recognize tool calls encoded in assistant content parts", async () => {
-    const session = "tool-call-content-part-" + Date.now();
+  test("should preserve tool input strings as-is", async () => {
+    const session = "tool-input-string-passthrough-" + Date.now();
     const mem = new MemoryLayer({
       maxTokens: 1000,
       summarizationModel: mockModel,
@@ -175,145 +139,37 @@ describe("MemoryLayer", () => {
     });
 
     await mem.addMessages(session, [
-      { role: "user", content: "Please run diagnostics" } as any,
+      { role: "user", content: "Run structured tool call" } as any,
       {
         role: "assistant",
         content: [
-          { type: "text", text: "Calling diagnostic tool." },
+          { type: "text", text: "Calling tool with JSON-string input." },
           {
             type: "tool-call",
-            toolCallId: "call-content-1",
-            toolName: "diagnose",
-            args: { deep: true },
+            toolCallId: "call-str-input",
+            toolName: "structuredTool",
+            input: '{"hello":"world","n":1}',
           },
         ],
       } as any,
     ]);
 
     const prompt = await mem.getPromptMessages(session);
-    expect(
-      prompt.some(
-        (msg: any) =>
-          msg.role === "tool" &&
-          Array.isArray(msg.content) &&
-          msg.content.some(
-            (part: any) =>
-              part.type === "tool-result" &&
-              part.toolCallId === "call-content-1" &&
-              part.result?.status === "missing_result",
-          ),
-      ),
-    ).toBe(true);
-
-    await mem.dispose();
-  });
-
-  test("should not synthesize missing results when assistant content already has tool-result", async () => {
-    const session = "assistant-tool-result-content-part-" + Date.now();
-    const mem = new MemoryLayer({
-      maxTokens: 1000,
-      summarizationModel: mockModel,
-      storage: new InMemoryStorageAdapter(),
-    });
-
-    await mem.addMessages(session, [
-      { role: "user", content: "Run diagnostics and show result." } as any,
-      {
-        role: "assistant",
-        content: [
-          { type: "text", text: "Tool call + inline result." },
-          {
-            type: "tool-call",
-            toolCallId: "call-inline-1",
-            toolName: "diagnose",
-            args: { deep: true },
-          },
-          {
-            type: "tool-result",
-            toolCallId: "call-inline-1",
-            toolName: "diagnose",
-            result: { ok: true },
-          },
-        ],
-      } as any,
-    ]);
-
-    const prompt = await mem.getPromptMessages(session);
-    expect(
-      prompt.some(
-        (msg: any) =>
-          msg.role === "tool" &&
-          Array.isArray(msg.content) &&
-          msg.content.some(
-            (part: any) =>
-              part.type === "tool-result" &&
-              part.toolCallId === "call-inline-1" &&
-              part.result?.status === "missing_result",
-          ),
-      ),
-    ).toBe(false);
-
-    await mem.dispose();
-  });
-
-  test("should synthesize only unresolved results across multiple tool calls", async () => {
-    const session = "multi-tool-partial-results-" + Date.now();
-    const mem = new MemoryLayer({
-      maxTokens: 1000,
-      summarizationModel: mockModel,
-      storage: new InMemoryStorageAdapter(),
-    });
-
-    await mem.addMessages(session, [
-      { role: "user", content: "Run two tools." } as any,
-      {
-        role: "assistant",
-        content: "Running now.",
-        toolCalls: [
-          {
-            type: "tool-call",
-            toolCallId: "call-a",
-            toolName: "toolA",
-            args: { x: 1 },
-          },
-          {
-            type: "tool-call",
-            toolCallId: "call-b",
-            toolName: "toolB",
-            args: { y: 2 },
-          },
-        ],
-      } as any,
-      {
-        role: "tool",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: "call-a",
-            toolName: "toolA",
-            result: { ok: true },
-          },
-        ],
-      } as any,
-    ]);
-
-    const prompt = await mem.getPromptMessages(session);
-    const toolMsgs = prompt.filter((msg: any) => msg.role === "tool");
-    const allParts = toolMsgs.flatMap((msg: any) =>
-      Array.isArray(msg.content) ? msg.content : [],
-    );
-    const missing = allParts.filter(
+    const assistant = prompt.find(
+      (message) => message.role === "assistant",
+    ) as any;
+    const toolPart = (assistant?.content ?? []).find(
       (part: any) =>
-        part.type === "tool-result" && part.result?.status === "missing_result",
+        part.type === "tool-call" && part.toolCallId === "call-str-input",
     );
-    expect(missing.length).toBe(1);
-    expect(missing[0]?.toolCallId).toBe("call-b");
+    expect(typeof toolPart?.input).toBe("string");
+    expect(toolPart?.input).toBe('{"hello":"world","n":1}');
 
     await mem.dispose();
   });
 
-  test("normalization should be idempotent", async () => {
-    const session = "normalization-idempotent-" + Date.now();
+  test("getPromptMessages should return stored messages unchanged", async () => {
+    const session = "prompt-passthrough-" + Date.now();
     const mem = new MemoryLayer({
       maxTokens: 1000,
       summarizationModel: mockModel,
@@ -323,14 +179,18 @@ describe("MemoryLayer", () => {
     await mem.addMessages(session, [
       { role: "user", content: "Run one tool." } as any,
       {
-        role: "assistant",
-        content: "Calling tool",
-        toolCalls: [
+        role: "tool",
+        content: [
+          undefined,
           {
-            type: "tool-call",
+            type: "text",
+            text: "legacy/invalid tool part that should pass through",
+          },
+          {
+            type: "tool-result",
             toolCallId: "idem-call",
             toolName: "idem",
-            args: {},
+            result: { ok: true },
           },
         ],
       } as any,
@@ -339,9 +199,22 @@ describe("MemoryLayer", () => {
     const firstPrompt = await mem.getPromptMessages(session);
     const secondPrompt = await mem.getPromptMessages(session);
     expect(secondPrompt).toEqual(firstPrompt);
-    expect(firstPrompt.filter((msg: any) => msg.role === "tool").length).toBe(
-      1,
-    );
+    expect(firstPrompt[1]).toEqual({
+      role: "tool",
+      content: [
+        undefined,
+        {
+          type: "text",
+          text: "legacy/invalid tool part that should pass through",
+        },
+        {
+          type: "tool-result",
+          toolCallId: "idem-call",
+          toolName: "idem",
+          result: { ok: true },
+        },
+      ],
+    });
 
     await mem.dispose();
   });
@@ -428,6 +301,116 @@ describe("MemoryLayer", () => {
       true,
     );
     expect(snapshot.stats.canonicalContext?.[0]?.role).toBe("system");
+
+    await mem.dispose();
+  });
+
+  test("addMessages appends without implicit dedupe", async () => {
+    const session = "append-no-implicit-dedupe-" + Date.now();
+    const mem = new MemoryLayer({
+      maxTokens: 1000,
+      summarizationModel: mockModel,
+      storage: new InMemoryStorageAdapter(),
+    });
+
+    const canonicalAssistant = {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Calling tool." },
+        {
+          type: "tool-call",
+          toolCallId: "dedupe-call",
+          toolName: "dedupeTool",
+          input: { q: "x" },
+        },
+      ],
+    } as any;
+
+    await mem.addMessages(session, [
+      { role: "user", content: "Run dedupe tool" } as any,
+      canonicalAssistant,
+    ]);
+
+    const incomingPrompt = [
+      { role: "user", content: "Run dedupe tool" } as any,
+      canonicalAssistant,
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "dedupe-call",
+            toolName: "dedupeTool",
+            result: { ok: true },
+          },
+        ],
+      } as any,
+    ];
+
+    await mem.addMessages(session, incomingPrompt as any);
+    const all = await mem.getMessages(session);
+
+    const userCount = all.filter((m) => m.role === "user").length;
+    const assistantCount = all.filter((m) => m.role === "assistant").length;
+    expect(userCount).toBe(2);
+    expect(assistantCount).toBe(2);
+
+    await mem.dispose();
+  });
+
+  test("should preserve malformed tool-role content parts as-is", async () => {
+    const session = "preserve-malformed-tool-content-" + Date.now();
+    const mem = new MemoryLayer({
+      maxTokens: 1000,
+      summarizationModel: mockModel,
+      storage: new InMemoryStorageAdapter(),
+    });
+
+    await mem.addMessages(session, [
+      { role: "user", content: "Run tool once" } as any,
+      {
+        role: "assistant",
+        content: "Calling tool",
+        toolCalls: [
+          {
+            type: "tool-call",
+            toolCallId: "sanitize-call-1",
+            toolName: "sanitizerTool",
+            args: {},
+          },
+        ],
+      } as any,
+      {
+        role: "tool",
+        // intentionally malformed: includes unsupported text part and undefined
+        content: [
+          undefined,
+          { type: "text", text: "not valid for tool role" },
+          {
+            type: "tool-result",
+            toolCallId: "sanitize-call-1",
+            toolName: "sanitizerTool",
+            output: { type: "json", value: { ok: true } },
+          },
+        ],
+      } as any,
+    ]);
+
+    const prompt = await mem.getPromptMessages(session);
+    const toolMessages = prompt.filter(
+      (message: any) => message.role === "tool",
+    );
+    expect(toolMessages.length).toBeGreaterThanOrEqual(1);
+    expect(toolMessages[0]?.content).toEqual([
+      undefined,
+      { type: "text", text: "not valid for tool role" },
+      {
+        type: "tool-result",
+        toolCallId: "sanitize-call-1",
+        toolName: "sanitizerTool",
+        output: { type: "json", value: { ok: true } },
+      },
+    ]);
 
     await mem.dispose();
   });

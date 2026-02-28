@@ -1,32 +1,30 @@
 # @one710/recollect
 
-Recollect is a memory layer for AI agents that provides robust context compaction for long-running chats. It keeps conversation state within model limits by summarizing older history while preserving recent turns and instruction context.
+[![Publish](https://github.com/one710/recollect/actions/workflows/publish.yml/badge.svg)](https://github.com/one710/recollect/actions/workflows/publish.yml)
+[![npm version](https://img.shields.io/npm/v/@one710/recollect.svg)](https://www.npmjs.com/package/@one710/recollect)
+[![npm downloads](https://img.shields.io/npm/dm/@one710/recollect.svg)](https://www.npmjs.com/package/@one710/recollect)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/one710/recollect/blob/main/LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Ready-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-## Features
+Recollect is a memory + compaction layer for long-running AI SDK chats.
 
-- **Robust Auto-Compaction**: Summarizes only the older slice of history and preserves recent turns for continuity.
-- **Full Message History**: Supports complex [AI SDK](https://ai-sdk.dev/) message types (`ModelMessage`), including multi-part content (text, images, files), tool calls, and tool results.
-- **Session-Based**: Manage multiple independent conversations using unique session IDs.
-- **Provider Agnostic**: Works with any LLM provider supported by the AI SDK.
-- **Fast Token Counting**: Uses [ai-tokenizer](https://github.com/coder/ai-tokenizer) by default, but supports custom implementations.
-- **Persistent Storage**: Uses `sqlite3` for reliable storage with zero external database server dependencies.
-- **Compaction Stability**: Merges prior summaries into new summaries to avoid summary loss across repeated compactions.
-- **Pluggable Storage Adapters**: Use built-in SQLite or in-memory adapters, or provide your own adapter.
-- **AI SDK Model Wrapper**: `withRecollectMemory(...)` wraps models so prompts are hydrated from memory automatically.
-- **Pre/Post Sampling Compaction**: Middleware can compact before model calls and after follow-up-producing outputs.
-- **Session Replay + Diagnostics**: Durable session events and stats for inspection/resume debugging.
+It keeps full session history, automatically compacts older context when needed, and preserves recent turns and instruction context so your app stays coherent as conversations grow.
+
+## Why Recollect
+
+- Works with AI SDK `LanguageModelV3Message` shapes (user/assistant/system/tool, multi-part content, tool calls/results)
+- Session-based memory with pluggable storage
+- Robust compaction strategy with summary checkpoints
+- Middleware that can auto-manage prompt/history lifecycle around `generateText`
+- Provider-agnostic (tested with OpenAI and Bedrock integration suites)
 
 ## Installation
 
 ```bash
-# Using npm
 npm install @one710/recollect
-
-# Using yarn
-yarn add @one710/recollect
 ```
 
-If you plan to use the default SQLite storage, also install:
+If you want SQLite persistence:
 
 ```bash
 npm install sqlite3
@@ -34,155 +32,176 @@ npm install sqlite3
 
 If you only use `InMemoryStorageAdapter`, `sqlite3` is not required.
 
-## Usage
+## Quick Start (Manual Memory API)
 
 ```typescript
 import { MemoryLayer } from "@one710/recollect";
 import { openai } from "@ai-sdk/openai";
 
 const memory = new MemoryLayer({
-  maxTokens: 4096,
+  maxTokens: 8192,
   summarizationModel: openai("gpt-4o-mini"),
-  threshold: 0.9, // Summarize at 90% of maxTokens
-  keepRecentUserTurns: 4, // preserve recent turn boundaries
-  keepRecentMessagesMin: 8, // preserve a minimum recency window
 });
 
-const sessionId = "user-123-chat-456";
+const sessionId = "chat:user-123";
 
-// Add messages using role and content
-await memory.addMessage(sessionId, "user", "What is the capital of France?");
+await memory.addMessage(sessionId, "user", "What should we build next?");
 await memory.addMessage(
   sessionId,
   "assistant",
-  "The capital of France is Paris.",
+  "Let's prioritize onboarding improvements.",
 );
 
-// Add complex messages using full AI SDK message objects
-await memory.addMessage(sessionId, null, {
-  role: "user",
-  content: [
-    { type: "text", text: "What is in this image?" },
-    { type: "image", image: "https://example.com/image.png" },
-  ],
-});
-
-// Supports tool calls and tool results automatically
 await memory.addMessage(sessionId, null, {
   role: "assistant",
-  content: "Let me check the weather.",
-  toolCalls: [
+  content: [
     {
       type: "tool-call",
       toolCallId: "call-1",
-      toolName: "getWeather",
-      args: { city: "Paris" },
+      toolName: "lookupMetric",
+      input: { key: "paid_subs_us_pct" } as any,
     },
   ],
 });
 
-// Fetch chat history (returns ModelMessage[])
+await memory.addMessage(sessionId, null, {
+  role: "tool",
+  content: [
+    {
+      type: "tool-result",
+      toolCallId: "call-1",
+      toolName: "lookupMetric",
+      output: { type: "json", value: { key: "paid_subs_us_pct", value: 63.2 } },
+    },
+  ],
+});
+
 const history = await memory.getMessages(sessionId);
-console.log(history);
+console.log(history.length);
 ```
 
-### AI SDK Wrapper
+## AI SDK Middleware (Automatic Mode)
+
+`withRecollectCompaction(...)` can automatically:
+
+1. ingest unseen incoming prompt messages
+2. run optional pre-compaction (`auto-pre`)
+3. hydrate the model prompt from memory
+4. ingest generated assistant/tool messages from model output
+5. run optional post-compaction (`auto-post`)
 
 ```typescript
 import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
-import { MemoryLayer, withRecollectMemory } from "@one710/recollect";
+import { MemoryLayer, withRecollectCompaction } from "@one710/recollect";
 
 const memory = new MemoryLayer({
   maxTokens: 8192,
   summarizationModel: openai("gpt-4o-mini"),
 });
 
-const model = withRecollectMemory({
+const model = withRecollectCompaction({
   model: openai("gpt-4o-mini"),
   memory,
+  preCompact: true,
+  postCompact: true,
+  postCompactStrategy: "follow-up-only", // or "always"
 });
 
-const result = await generateText({
+await generateText({
   model,
-  messages: [{ role: "user", content: "Summarize our last decisions" }],
-  providerOptions: {
-    recollect: { sessionId: "user-123-chat-456" },
-  },
+  messages: [{ role: "user", content: "Continue." }],
+  providerOptions: { recollect: { sessionId: "chat:user-123" } },
 });
 ```
 
-## Configuration
+### Session ID Resolution
 
-The `MemoryLayer` constructor accepts the following options:
+By default, middleware reads session id from:
 
-- `maxTokens`: (Required) The maximum number of tokens allowed in history.
-- `summarizationModel`: (Required) The AI SDK model used to generate summaries.
-- `threshold`: (Optional) The percentage (0.0 to 1.0) of `maxTokens` that triggers summarization. Defaults to `0.9`.
-- `countTokens`: (Optional) A custom function `(text: string) => number` to count tokens. Defaults to the internal `ai-tokenizer` logic.
-- `databasePath`: (Optional) Path to the SQLite database.
-- `storage`: (Optional) Custom storage adapter implementing `MemoryStorageAdapter`.
-- `targetTokensAfterCompaction`: (Optional) Target token budget after compaction. Defaults to `65%` of `maxTokens`.
-- `keepRecentUserTurns`: (Optional) Number of latest user turns to preserve verbatim. Defaults to `4`.
-- `keepRecentMessagesMin`: (Optional) Minimum count of latest messages to preserve. Defaults to `8`.
-- `maxCompactionPasses`: (Optional) Maximum compaction passes per write. Defaults to `3`.
-- `minimumMessagesToCompact`: (Optional) Do not compact below this session size. Defaults to `6`.
+- `providerOptions.recollect.sessionId`
 
-### memory.addMessage(sessionId, role?, contentOrMessage)
+You can override via `resolveSessionId(params)`.
 
-Adds a message to the chat history.
+## API Overview
 
-- `sessionId`: (Required) The session ID for the conversation.
-- `role`: (Optional) The message role (`user`, `assistant`, `system`, etc.). If `null`, `contentOrMessage` must be a full AI SDK message object.
-- `contentOrMessage`: (Required) Either a string (if `role` is provided) or a full `ModelMessage` object (if `role` is `null`).
+### `MemoryLayer` options
 
-### memory.getMessages(sessionId)
+- `maxTokens` (required)
+- `summarizationModel` (required)
+- `threshold` (default `0.9`)
+- `targetTokensAfterCompaction` (default `65%` of `maxTokens`)
+- `keepRecentUserTurns` (default `4`)
+- `keepRecentMessagesMin` (default `8`)
+- `maxCompactionPasses` (default `3`)
+- `minimumMessagesToCompact` (default `6`)
+- `countTokens` (optional custom tokenizer)
+- `storage` (optional custom adapter)
+- `databasePath` (used only when `storage` is not provided)
+- `onCompactionEvent` (optional diagnostics hook)
 
-Returns the full chat history for a session as an array of `ModelMessage`.
+### `MemoryLayer` methods
 
-### memory.compactNow(sessionId)
+- `addMessage(sessionId, role, contentOrMessage)`
+- `addMessages(sessionId, messages)`
+- `getMessages(sessionId)`
+- `getPromptMessages(sessionId)`
+- `compactNow(sessionId)`
+- `compactIfNeeded(sessionId, options)`
+- `getSessionEvents(sessionId, limit?)`
+- `getSessionSnapshot(sessionId)`
+- `clearSession(sessionId)`
+- `dispose()`
 
-Forces an immediate compaction pass, useful before a model switch to a smaller context window.
+## Storage
 
-### memory.compactIfNeeded(sessionId, options)
+Exports:
 
-Runs compaction in a specific mode (`manual`, `auto-pre`, `auto-post`, `ingest`) and reason.
+- `InMemoryStorageAdapter`
+- `createSQLiteStorageAdapter(databasePath)`
+- `MemoryStorageAdapter` type (for custom adapters)
 
-### memory.getSessionEvents(sessionId, limit?)
+## Integration Testing (Manual, Real Providers)
 
-Returns session events such as message ingest, normalization, compaction start, and compaction apply.
+These are provider-backed integration runs (not unit tests):
 
-### memory.getSessionSnapshot(sessionId)
+```bash
+npm run test:integration:openai
+npm run test:integration:bedrock
+```
 
-Returns current messages, token count, and persisted compaction stats.
+### Required env vars
 
-## Storage Adapters
+OpenAI:
 
-Recollect exports:
+- `OPENAI_API_KEY`
+- optional: `RECOLLECT_OPENAI_MODEL` (default `gpt-5-nano`)
 
-- `SQLiteStorageAdapter` (default)
-- `InMemoryStorageAdapter` (helpful for tests)
+Bedrock:
 
-You can provide your own adapter by implementing `MemoryStorageAdapter`.
+- `AWS_REGION`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- optional: `AWS_SESSION_TOKEN`
+- optional: `AWS_BEARER_TOKEN_BEDROCK`
+- optional: `RECOLLECT_BEDROCK_MODEL`
+
+### Covered scenarios
+
+- simple turn
+- multi-turn with full-history resend
+- existing simple history
+- existing tool-call history
+- malformed existing history (tool-call without prior tool-result)
+- missing assistant messages in prior history
+- forced compaction with checkpoint summary validation
 
 ## Development
 
-### Prerequisites
-
-- Node.js v18 or higher
-- SQLite (via `sqlite3` npm package)
-
-### Setup
-
 ```bash
-yarn
-yarn build
-```
-
-### Running Tests
-
-```bash
-yarn test
+npm install
+npm run build
+npm test
 ```
 
 ## License

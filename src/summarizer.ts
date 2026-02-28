@@ -1,7 +1,15 @@
 import { generateText } from "ai";
-import type { LanguageModel, ModelMessage } from "ai";
+import type { LanguageModel } from "ai";
+import type { LanguageModelV3Message } from "@ai-sdk/provider";
 
 export const SUMMARY_MESSAGE_PREFIX = "Conversation checkpoint summary";
+
+const SYETEM_INSTRUCTIONS = `
+You produce checkpoint summaries for long-running AI conversations.
+Preserve user intent, constraints, decisions, unresolved tasks, important tool outputs, and known failures.
+Use concise bullet points grouped by: Goals, Decisions, Constraints, Pending Work, and Risks.
+Never invent details, only summarize the conversation.
+`;
 
 export interface SummarizeConversationOptions {
   existingSummary?: string | null;
@@ -9,7 +17,7 @@ export interface SummarizeConversationOptions {
   maxInputCharacters?: number;
 }
 
-function renderMessage(message: ModelMessage): string {
+function renderMessage(message: LanguageModelV3Message): string {
   let content = "";
 
   if (typeof message.content === "string") {
@@ -18,7 +26,6 @@ function renderMessage(message: ModelMessage): string {
     content = message.content
       .map((part) => {
         if (part.type === "text") return part.text;
-        if (part.type === "image") return "[Image]";
         if (part.type === "file")
           return `[File: ${part.filename || "unnamed"}]`;
         if (part.type === "tool-result") {
@@ -52,7 +59,7 @@ function renderMessage(message: ModelMessage): string {
  * Summarizes a conversation history using a provided language model.
  */
 export async function summarizeConversation(
-  messages: ModelMessage[],
+  messages: LanguageModelV3Message[],
   model: LanguageModel,
   options: SummarizeConversationOptions = {},
 ): Promise<string> {
@@ -71,11 +78,13 @@ export async function summarizeConversation(
 
   const { text } = await generateText({
     model,
-    system:
-      "You produce checkpoint summaries for long-running AI conversations. Preserve user intent, constraints, decisions, unresolved tasks, important tool outputs, and known failures. Use concise bullet points grouped by: Goals, Decisions, Constraints, Pending Work, and Risks. Never invent details.",
+    system: SYETEM_INSTRUCTIONS,
     prompt: `${reason}
 
-${priorSummary}New transcript segment to merge:
+${priorSummary}
+
+New transcript segment to merge:
+
 ${conversationText}`,
   });
 

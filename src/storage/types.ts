@@ -1,11 +1,11 @@
-import type { ModelMessage } from "ai";
+import type { LanguageModelV3Message } from "@ai-sdk/provider";
 
 export interface SessionStats {
   compactionCount: number;
   lastCompactionTokensBefore: number | null;
   lastCompactionTokensAfter: number | null;
   lastCompactionReason: string | null;
-  canonicalContext: ModelMessage[] | null;
+  canonicalContext: LanguageModelV3Message[] | null;
 }
 
 export interface SessionEvent {
@@ -18,9 +18,15 @@ export interface SessionEvent {
 
 export interface MemoryStorageAdapter {
   init(): Promise<void>;
-  appendMessage(sessionId: string, message: ModelMessage): Promise<void>;
-  listMessages(sessionId: string): Promise<ModelMessage[]>;
-  replaceMessages(sessionId: string, messages: ModelMessage[]): Promise<void>;
+  appendMessage(
+    sessionId: string,
+    message: LanguageModelV3Message,
+  ): Promise<void>;
+  listMessages(sessionId: string): Promise<LanguageModelV3Message[]>;
+  replaceMessages(
+    sessionId: string,
+    messages: LanguageModelV3Message[],
+  ): Promise<void>;
   clearSession(sessionId: string): Promise<void>;
   appendEvent(event: SessionEvent): Promise<void>;
   listEvents(sessionId: string, limit?: number): Promise<SessionEvent[]>;

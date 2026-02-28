@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { LanguageModelV3Message } from "@ai-sdk/provider";
 import type {
   MemoryStorageAdapter,
   SessionEvent,
@@ -6,7 +6,7 @@ import type {
 } from "./types.js";
 
 export class InMemoryStorageAdapter implements MemoryStorageAdapter {
-  private sessions = new Map<string, ModelMessage[]>();
+  private sessions = new Map<string, LanguageModelV3Message[]>();
   private stats = new Map<string, SessionStats>();
   private events = new Map<string, SessionEvent[]>();
   private nextEventId = 1;
@@ -15,19 +15,22 @@ export class InMemoryStorageAdapter implements MemoryStorageAdapter {
     // No-op for in-memory adapter.
   }
 
-  async appendMessage(sessionId: string, message: ModelMessage): Promise<void> {
+  async appendMessage(
+    sessionId: string,
+    message: LanguageModelV3Message,
+  ): Promise<void> {
     const current = this.sessions.get(sessionId) ?? [];
     current.push(message);
     this.sessions.set(sessionId, current);
   }
 
-  async listMessages(sessionId: string): Promise<ModelMessage[]> {
+  async listMessages(sessionId: string): Promise<LanguageModelV3Message[]> {
     return [...(this.sessions.get(sessionId) ?? [])];
   }
 
   async replaceMessages(
     sessionId: string,
-    messages: ModelMessage[],
+    messages: LanguageModelV3Message[],
   ): Promise<void> {
     this.sessions.set(sessionId, [...messages]);
   }

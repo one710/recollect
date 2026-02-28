@@ -1,6 +1,6 @@
 import { Tokenizer } from "ai-tokenizer";
 import * as o200k_base from "ai-tokenizer/encoding/o200k_base";
-import type { ModelMessage } from "ai";
+import type { LanguageModelV3Message } from "@ai-sdk/provider";
 
 const defaultTokenizer = new Tokenizer(o200k_base);
 
@@ -15,7 +15,7 @@ export function countTokens(text: string): number {
  * Counts the tokens in a list of messages.
  */
 export function countMessagesTokens(
-  messages: ModelMessage[],
+  messages: LanguageModelV3Message[],
   counter: (text: string) => number = countTokens,
 ): number {
   return messages.reduce((acc, m) => {
@@ -29,10 +29,11 @@ export function countMessagesTokens(
       messageTokens += counter(m.content);
     } else if (Array.isArray(m.content)) {
       for (const part of m.content) {
+        if (!part || typeof part !== "object") {
+          continue;
+        }
         if (part.type === "text") {
           messageTokens += counter(part.text);
-        } else if (part.type === "image") {
-          messageTokens += 85; // Rough estimate for image tokens
         } else if (part.type === "file") {
           messageTokens += 85; // Rough estimate for file tokens
         }
@@ -51,6 +52,9 @@ export function countMessagesTokens(
     // Handle tool results in tool messages
     if (m.role === "tool" && Array.isArray(m.content)) {
       for (const result of m.content) {
+        if (!result || typeof result !== "object") {
+          continue;
+        }
         if (result.type === "tool-result") {
           const resultValue = (result as any).result ?? (result as any).output;
           messageTokens += counter(JSON.stringify(resultValue) ?? "");

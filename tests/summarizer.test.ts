@@ -1,6 +1,6 @@
 import { jest, describe, test, expect } from "@jest/globals";
 import { summarizeConversation } from "../src/summarizer.js";
-import type { ModelMessage } from "ai";
+import type { LanguageModelV3Message } from "@ai-sdk/provider";
 
 describe("Summarizer", () => {
   const mockModel: any = {
@@ -21,11 +21,11 @@ describe("Summarizer", () => {
   };
   test("summarizeConversation should call generateText and return summary", async () => {
     const messages = [
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: "Hi!" },
+      { role: "user", content: [{ type: "text", text: "Hello" }] },
+      { role: "assistant", content: [{ type: "text", text: "Hi!" }] },
     ];
     const summary = await summarizeConversation(
-      messages as ModelMessage[],
+      messages as LanguageModelV3Message[],
       mockModel,
     );
 

@@ -1,4 +1,5 @@
-import type { LanguageModel, ModelMessage } from "ai";
+import type { LanguageModel } from "ai";
+import type { LanguageModelV3Message } from "@ai-sdk/provider";
 import { countMessagesTokens } from "./tokenizer.js";
 import { summarizeConversation, SUMMARY_MESSAGE_PREFIX } from "./summarizer.js";
 import {
@@ -7,6 +8,13 @@ import {
   type SessionEvent,
   type SessionStats,
 } from "./storage.js";
+
+const DEFAULT_THRESHOLD = 0.9;
+const DEFAULT_TARGET_TOKENS_FACTOR = 0.65;
+const DEFAULT_KEEP_RECENT_USER_TURNS = 4;
+const DEFAULT_KEEP_RECENT_MESSAGES_MIN = 8;
+const DEFAULT_MAX_COMPACTION_PASSES = 3;
+const DEFAULT_MINIMUM_MESSAGES_TO_COMPACT = 6;
 
 export interface MemoryLayerOptions {
   /**
@@ -68,9 +76,9 @@ export interface MemoryLayerOptions {
 }
 
 interface CompactionPlan {
-  head: ModelMessage[];
-  summarizeSlice: ModelMessage[];
-  tail: ModelMessage[];
+  head: LanguageModelV3Message[];
+  summarizeSlice: LanguageModelV3Message[];
+  tail: LanguageModelV3Message[];
   existingSummary: string | null;
 }
 
@@ -90,7 +98,7 @@ export interface CompactionEvent {
 }
 
 export interface SessionSnapshot {
-  messages: ModelMessage[];
+  messages: LanguageModelV3Message[];
   tokenCount: number;
   stats: SessionStats;
 }
@@ -121,20 +129,26 @@ export class MemoryLayer {
 
     this.maxTokens = options.maxTokens;
     this.summarizationModel = options.summarizationModel;
-    this.threshold = options.threshold ?? 0.9;
+    this.threshold = options.threshold ?? DEFAULT_THRESHOLD;
     this.customCountTokens = options.countTokens;
     this.targetTokensAfterCompaction =
       options.targetTokensAfterCompaction ??
-      Math.max(1, Math.floor(this.maxTokens * 0.65));
-    this.keepRecentUserTurns = Math.max(1, options.keepRecentUserTurns ?? 4);
+      Math.max(1, Math.floor(this.maxTokens * DEFAULT_TARGET_TOKENS_FACTOR));
+    this.keepRecentUserTurns = Math.max(
+      1,
+      options.keepRecentUserTurns ?? DEFAULT_KEEP_RECENT_USER_TURNS,
+    );
     this.keepRecentMessagesMin = Math.max(
       1,
-      options.keepRecentMessagesMin ?? 8,
+      options.keepRecentMessagesMin ?? DEFAULT_KEEP_RECENT_MESSAGES_MIN,
     );
-    this.maxCompactionPasses = Math.max(1, options.maxCompactionPasses ?? 3);
+    this.maxCompactionPasses = Math.max(
+      1,
+      options.maxCompactionPasses ?? DEFAULT_MAX_COMPACTION_PASSES,
+    );
     this.minimumMessagesToCompact = Math.max(
       2,
-      options.minimumMessagesToCompact ?? 6,
+      options.minimumMessagesToCompact ?? DEFAULT_MINIMUM_MESSAGES_TO_COMPACT,
     );
     this.onCompactionEvent = options.onCompactionEvent;
   }
@@ -167,10 +181,10 @@ export class MemoryLayer {
    */
   async addMessage(
     sessionId: string,
-    role: ModelMessage["role"] | null,
-    contentOrMessage: string | ModelMessage,
+    role: LanguageModelV3Message["role"] | null,
+    contentOrMessage: string | LanguageModelV3Message,
   ): Promise<void> {
-    let message: ModelMessage;
+    let message: LanguageModelV3Message;
 
     if (role === null) {
       if (typeof contentOrMessage === "string") {
@@ -181,30 +195,27 @@ export class MemoryLayer {
       if (typeof contentOrMessage !== "string") {
         throw new Error("Content string is required when role is specified.");
       }
-      message = {
-        role: role as any,
-        content: contentOrMessage as any,
-      } as ModelMessage;
+      if (role === "system") {
+        message = {
+          role,
+          content: contentOrMessage,
+        };
+      } else if (role === "tool") {
+        throw new Error("Tool role requires a structured message object.");
+      } else {
+        message = {
+          role: role as Exclude<
+            LanguageModelV3Message["role"],
+            "system" | "tool"
+          >,
+          content: [{ type: "text", text: contentOrMessage }],
+        };
+      }
     }
-
     await this.ensureReady();
-    await this.requireStorage().appendMessage(sessionId, message);
-    await this.appendEvent({
-      sessionId,
-      type: "message_appended",
-      payload: { role: message.role },
+    await this.appendAndMaybeCompact(sessionId, [message], "message_appended", {
+      role: message.role,
     });
-    const history = await this.requireStorage().listMessages(sessionId);
-    await this.ensureCanonicalContextSnapshot(sessionId, history);
-    const tokenCount = countMessagesTokens(history, this.customCountTokens);
-
-    if (tokenCount >= this.compactionTriggerTokens()) {
-      await this.compactSession(sessionId, history, {
-        mode: "ingest",
-        reason: "threshold_reached_after_add_message",
-        force: false,
-      });
-    }
   }
 
   /**
@@ -212,84 +223,27 @@ export class MemoryLayer {
    */
   async addMessages(
     sessionId: string,
-    messages: ModelMessage[],
+    messages: LanguageModelV3Message[],
   ): Promise<void> {
     await this.ensureReady();
-    for (const message of messages) {
-      await this.requireStorage().appendMessage(sessionId, message);
-    }
-    await this.appendEvent({
-      sessionId,
-      type: "messages_appended",
-      payload: { count: messages.length },
+    await this.appendAndMaybeCompact(sessionId, messages, "messages_appended", {
+      count: messages.length,
     });
-    const history = await this.requireStorage().listMessages(sessionId);
-    await this.ensureCanonicalContextSnapshot(sessionId, history);
-    const tokenCount = countMessagesTokens(history, this.customCountTokens);
-    if (tokenCount >= this.compactionTriggerTokens()) {
-      await this.compactSession(sessionId, history, {
-        mode: "ingest",
-        reason: "threshold_reached_after_add_messages",
-        force: false,
-      });
-    }
-  }
-
-  /**
-   * Synchronizes session memory with the incoming prompt list by appending
-   * only the unseen suffix.
-   */
-  async syncFromPrompt(
-    sessionId: string,
-    promptMessages: ModelMessage[],
-  ): Promise<void> {
-    await this.ensureReady();
-    const stored = await this.requireStorage().listMessages(sessionId);
-    let prefix = 0;
-    const maxPrefix = Math.min(stored.length, promptMessages.length);
-    while (
-      prefix < maxPrefix &&
-      JSON.stringify(stored[prefix]) === JSON.stringify(promptMessages[prefix])
-    ) {
-      prefix += 1;
-    }
-    const unseen = promptMessages.slice(prefix);
-    if (unseen.length > 0) {
-      await this.addMessages(sessionId, unseen);
-      await this.appendEvent({
-        sessionId,
-        type: "prompt_synced",
-        payload: { unseenCount: unseen.length, prefixMatch: prefix },
-      });
-    }
   }
 
   /**
    * Returns the persisted memory for this session (suitable as model prompt).
    */
-  async getPromptMessages(sessionId: string): Promise<ModelMessage[]> {
-    await this.ensureReady();
-    const history = await this.requireStorage().listMessages(sessionId);
-    const normalized = this.normalizeHistoryForPrompt(history);
-    if (!this.messagesEqual(history, normalized)) {
-      await this.requireStorage().replaceMessages(sessionId, normalized);
-      await this.appendEvent({
-        sessionId,
-        type: "history_normalized",
-        payload: {
-          beforeCount: history.length,
-          afterCount: normalized.length,
-        },
-      });
-      return normalized;
-    }
-    return history;
+  async getPromptMessages(
+    sessionId: string,
+  ): Promise<LanguageModelV3Message[]> {
+    return this.getMessages(sessionId);
   }
 
   /**
    * Fetches the current chat history for a session.
    */
-  async getMessages(sessionId: string): Promise<ModelMessage[]> {
+  async getMessages(sessionId: string): Promise<LanguageModelV3Message[]> {
     await this.ensureReady();
     return this.requireStorage().listMessages(sessionId);
   }
@@ -338,22 +292,17 @@ export class MemoryLayer {
     return Math.max(1, Math.floor(this.maxTokens * this.threshold));
   }
 
-  private messageTokens(messages: ModelMessage[]): number {
+  private messageTokens(messages: LanguageModelV3Message[]): number {
     return countMessagesTokens(messages, this.customCountTokens);
   }
 
-  private roleOf(message: ModelMessage): string {
-    return String(message.role);
+  private isPinnedInstructionRole(message: LanguageModelV3Message): boolean {
+    return message.role === "system" || (message as any).role === "developer";
   }
 
-  private isPinnedInstructionRole(message: ModelMessage): boolean {
-    const role = this.roleOf(message);
-    return role === "system" || role === "developer";
-  }
-
-  private isSummaryMessage(message: ModelMessage): boolean {
+  private isSummaryMessage(message: LanguageModelV3Message): boolean {
     return (
-      this.roleOf(message) === "system" &&
+      message.role === "system" &&
       typeof message.content === "string" &&
       message.content.startsWith(SUMMARY_MESSAGE_PREFIX)
     );
@@ -367,16 +316,9 @@ export class MemoryLayer {
     return content.trim();
   }
 
-  private lastUserBoundaryIndex(messages: ModelMessage[]): number | null {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (this.roleOf(messages[i] as ModelMessage) === "user") {
-        return i;
-      }
-    }
-    return null;
-  }
-
-  private leadingCanonicalContext(messages: ModelMessage[]): ModelMessage[] {
+  private leadingCanonicalContext(
+    messages: LanguageModelV3Message[],
+  ): LanguageModelV3Message[] {
     let idx = 0;
     while (
       idx < messages.length &&
@@ -387,122 +329,9 @@ export class MemoryLayer {
     return messages.slice(0, idx);
   }
 
-  private messagesEqual(a: ModelMessage[], b: ModelMessage[]): boolean {
-    if (a.length !== b.length) {
-      return false;
-    }
-    for (let i = 0; i < a.length; i += 1) {
-      if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private normalizeHistoryForPrompt(messages: ModelMessage[]): ModelMessage[] {
-    const toolCalls = new Map<string, string>();
-    const hasResults = new Set<string>();
-
-    const registerToolCall = (toolCallId: unknown, toolName: unknown) => {
-      if (!toolCallId || !toolName) {
-        return;
-      }
-      toolCalls.set(String(toolCallId), String(toolName));
-    };
-
-    const recordToolResultIfKnown = (part: any) => {
-      if (part?.type !== "tool-result" || !part?.toolCallId) {
-        return;
-      }
-      const id = String(part.toolCallId);
-      if (toolCalls.has(id)) {
-        hasResults.add(id);
-      }
-    };
-
-    for (const message of messages) {
-      if (message.role !== "assistant") {
-        continue;
-      }
-
-      if (Array.isArray(message.content)) {
-        for (const part of message.content as any[]) {
-          // AI SDK providers can encode tool calls in content parts.
-          if (part?.type === "tool-call") {
-            registerToolCall(part.toolCallId, part.toolName);
-          }
-          // Some stacks may include tool-result parts in assistant content.
-          recordToolResultIfKnown(part);
-        }
-      }
-
-      const calls = (message as any).toolCalls;
-      if (!Array.isArray(calls)) {
-        continue;
-      }
-      for (const call of calls) {
-        registerToolCall(call.toolCallId, call.toolName);
-      }
-    }
-
-    const normalized: ModelMessage[] = [];
-    for (const message of messages) {
-      if (message.role !== "tool") {
-        normalized.push(message);
-        continue;
-      }
-
-      if (!Array.isArray(message.content)) {
-        normalized.push(message);
-        continue;
-      }
-
-      const filteredContent = message.content.filter((part: any) => {
-        if (part?.type !== "tool-result" || !part?.toolCallId) {
-          return true;
-        }
-        const id = String(part.toolCallId);
-        const knownCall = toolCalls.has(id);
-        if (knownCall) {
-          hasResults.add(id);
-        }
-        return knownCall;
-      });
-
-      if (filteredContent.length > 0) {
-        normalized.push({
-          ...message,
-          content: filteredContent as any,
-        });
-      }
-    }
-
-    const missingResultParts = [...toolCalls.entries()]
-      .filter(([callId]) => !hasResults.has(callId))
-      .map(([toolCallId, toolName]) => ({
-        type: "tool-result",
-        toolCallId,
-        toolName,
-        result: {
-          status: "missing_result",
-          message:
-            "Tool result was unavailable in compacted history. Continue from latest known state.",
-        },
-      }));
-
-    if (missingResultParts.length > 0) {
-      normalized.push({
-        role: "tool",
-        content: missingResultParts as any,
-      } as ModelMessage);
-    }
-
-    return normalized;
-  }
-
   private async ensureCanonicalContextSnapshot(
     sessionId: string,
-    history: ModelMessage[],
+    history: LanguageModelV3Message[],
   ): Promise<void> {
     const stats = await this.requireStorage().getStats(sessionId);
     if (stats.canonicalContext && stats.canonicalContext.length > 0) {
@@ -522,9 +351,40 @@ export class MemoryLayer {
     });
   }
 
+  private async appendAndMaybeCompact(
+    sessionId: string,
+    messages: LanguageModelV3Message[],
+    eventType: SessionEvent["type"],
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    for (const message of messages) {
+      await this.requireStorage().appendMessage(sessionId, message);
+    }
+    await this.appendEvent({
+      sessionId,
+      type: eventType,
+      payload,
+    });
+
+    const history = await this.requireStorage().listMessages(sessionId);
+    await this.ensureCanonicalContextSnapshot(sessionId, history);
+    const tokenCount = this.messageTokens(history);
+    if (tokenCount < this.compactionTriggerTokens()) {
+      return;
+    }
+    await this.compactSession(sessionId, history, {
+      mode: "ingest",
+      reason:
+        messages.length === 1
+          ? "threshold_reached_after_add_message"
+          : "threshold_reached_after_add_messages",
+      force: false,
+    });
+  }
+
   private planCompaction(
-    messages: ModelMessage[],
-    canonicalContext: ModelMessage[] | null,
+    messages: LanguageModelV3Message[],
+    canonicalContext: LanguageModelV3Message[] | null,
   ): CompactionPlan | null {
     if (messages.length < this.minimumMessagesToCompact) {
       return null;
@@ -540,14 +400,14 @@ export class MemoryLayer {
     let pinnedHeadEnd = fallbackHead.length;
     while (
       pinnedHeadEnd < messages.length &&
-      this.isPinnedInstructionRole(messages[pinnedHeadEnd] as ModelMessage)
+      this.isPinnedInstructionRole(messages[pinnedHeadEnd]!)
     ) {
       pinnedHeadEnd += 1;
     }
 
     const userBoundaries: number[] = [];
     for (let i = pinnedHeadEnd; i < messages.length; i += 1) {
-      if (this.roleOf(messages[i] as ModelMessage) === "user") {
+      if (messages[i]?.role === "user") {
         userBoundaries.push(i);
       }
     }
@@ -586,21 +446,10 @@ export class MemoryLayer {
 
   private async compactSession(
     sessionId: string,
-    initialHistory: ModelMessage[],
+    initialHistory: LanguageModelV3Message[],
     options: CompactOptions,
   ): Promise<void> {
-    let history = this.normalizeHistoryForPrompt(initialHistory);
-    if (!this.messagesEqual(initialHistory, history)) {
-      await this.requireStorage().replaceMessages(sessionId, history);
-      await this.appendEvent({
-        sessionId,
-        type: "history_normalized",
-        payload: {
-          beforeCount: initialHistory.length,
-          afterCount: history.length,
-        },
-      });
-    }
+    let history = initialHistory;
 
     await this.ensureCanonicalContextSnapshot(sessionId, history);
     const stats = await this.requireStorage().getStats(sessionId);
@@ -666,16 +515,12 @@ export class MemoryLayer {
         },
       );
 
-      const summaryMessage: ModelMessage = {
+      const summaryMessage: LanguageModelV3Message = {
         role: "system",
         content: `${SUMMARY_MESSAGE_PREFIX}\n${summary.trim()}`,
       };
 
-      const nextHistory = this.normalizeHistoryForPrompt([
-        ...plan.head,
-        summaryMessage,
-        ...plan.tail,
-      ]);
+      const nextHistory = [...plan.head, summaryMessage, ...plan.tail];
       const afterTokens = this.messageTokens(nextHistory);
 
       // Abort if compaction does not reduce prompt size.
@@ -725,11 +570,6 @@ export class MemoryLayer {
       });
 
       if (afterTokens <= this.targetTokensAfterCompaction) {
-        return;
-      }
-
-      const lastUserBoundary = this.lastUserBoundaryIndex(history);
-      if (lastUserBoundary === null) {
         return;
       }
     }
