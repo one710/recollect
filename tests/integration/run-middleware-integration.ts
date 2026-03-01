@@ -72,7 +72,13 @@ function countUserText(
   text: string,
 ): number {
   return messages.filter((message) => {
-    if (message.role !== "user" || !Array.isArray(message.content)) {
+    if (message.role !== "user") {
+      return false;
+    }
+    if (typeof message.content === "string") {
+      return message.content === text;
+    }
+    if (!Array.isArray(message.content)) {
       return false;
     }
     return message.content.some(
@@ -152,12 +158,18 @@ export async function runMiddlewareIntegrationSuite(
     sessionId: string;
     messages: LanguageModelV3Message[];
     withTools?: boolean;
+    sessionRunId?: string;
   }) => {
     return generateText({
       model: wrapped as any,
       messages: args.messages as any,
       ...(args.withTools ? { tools, maxSteps: 4 } : {}),
-      providerOptions: { recollect: { sessionId: args.sessionId } },
+      providerOptions: {
+        recollect: {
+          sessionId: args.sessionId,
+          sessionRunId: args.sessionRunId ?? randomUUID(),
+        },
+      },
     } as any);
   };
 
@@ -169,6 +181,7 @@ export async function runMiddlewareIntegrationSuite(
     await runTurn({
       sessionId,
       messages: [userMessage(userText)],
+      sessionRunId: randomUUID(),
     });
     const history = await memory.getMessages(sessionId);
     assertCondition(
@@ -187,12 +200,14 @@ export async function runMiddlewareIntegrationSuite(
     await runTurn({
       sessionId,
       messages: [userMessage(turn1)],
+      sessionRunId: randomUUID(),
     });
     const persistedAfterTurn1 = await memory.getMessages(sessionId);
     const turn2 = "Expand that into three bullets.";
     await runTurn({
       sessionId,
       messages: [...persistedAfterTurn1, userMessage(turn2)],
+      sessionRunId: randomUUID(),
     });
     const history = await memory.getMessages(sessionId);
     assertCondition(
@@ -218,6 +233,7 @@ export async function runMiddlewareIntegrationSuite(
     await runTurn({
       sessionId,
       messages: [userMessage(followup)],
+      sessionRunId: randomUUID(),
     });
     const history = await memory.getMessages(sessionId);
     assertCondition(
@@ -255,6 +271,7 @@ export async function runMiddlewareIntegrationSuite(
       sessionId,
       messages: [userMessage("Explain that metric in one concise sentence.")],
       withTools: true,
+      sessionRunId: randomUUID(),
     });
     const history = await memory.getMessages(sessionId);
     assertCondition(
@@ -298,6 +315,7 @@ export async function runMiddlewareIntegrationSuite(
           userMessage("Now finish with one sentence."),
         ],
         withTools: true,
+        sessionRunId: randomUUID(),
       });
 
       const history = await memory.getMessages(sessionId);
@@ -328,6 +346,7 @@ export async function runMiddlewareIntegrationSuite(
     await runTurn({
       sessionId,
       messages: [userMessage(third)],
+      sessionRunId: randomUUID(),
     });
     const history = await memory.getMessages(sessionId);
     assertCondition(
@@ -341,6 +360,67 @@ export async function runMiddlewareIntegrationSuite(
       "missing assistant: did not recover with a new assistant message",
     );
   });
+
+  await runScenario("sessionRunId retry idempotency", async () => {
+    const sessionId = `it-${providerName}-run-idempotency-${randomUUID()}`;
+    const runId = `run-${randomUUID()}`;
+    const userText = "Reply with exactly: OK";
+
+    await runTurn({
+      sessionId,
+      messages: [userMessage(userText)],
+      sessionRunId: runId,
+    });
+
+    // Simulate retry of the same run with identical run id.
+    await runTurn({
+      sessionId,
+      messages: [userMessage(userText)],
+      sessionRunId: runId,
+    });
+
+    const history = await memory.getMessages(sessionId);
+    const userCount = countUserText(history, userText);
+    const assistantCount = history.filter(
+      (message) => message.role === "assistant",
+    ).length;
+    assertCondition(
+      userCount === 1,
+      "sessionRunId idempotency: user ingested more than once",
+    );
+    assertCondition(
+      assistantCount === 1,
+      "sessionRunId idempotency: assistant ingested more than once",
+    );
+  });
+
+  await runScenario(
+    "repeated user text across different runs is preserved",
+    async () => {
+      const sessionId = `it-${providerName}-repeat-user-${randomUUID()}`;
+      const repeated = "Hi";
+
+      await runTurn({
+        sessionId,
+        messages: [userMessage(repeated)],
+        sessionRunId: `run-${randomUUID()}`,
+      });
+
+      const historyAfterFirst = await memory.getMessages(sessionId);
+      await runTurn({
+        sessionId,
+        messages: [...historyAfterFirst, userMessage(repeated)],
+        sessionRunId: `run-${randomUUID()}`,
+      });
+
+      const history = await memory.getMessages(sessionId);
+      const userCount = countUserText(history, repeated);
+      assertCondition(
+        userCount === 2,
+        "repeat user: expected two distinct user messages with same text",
+      );
+    },
+  );
 
   await runScenario("forced compaction with checkpoint summary", async () => {
     const compactionMemory = new MemoryLayer({

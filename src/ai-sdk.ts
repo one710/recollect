@@ -5,11 +5,21 @@ import type {
   LanguageModelV3Message,
 } from "@ai-sdk/provider";
 import { MemoryLayer } from "./memory.js";
+import {
+  collectGeneratedMessages,
+  findPromptSuffixToAppend,
+  normalizeMessages,
+  shouldRunPostCompaction,
+  uniqueWithinBatch,
+} from "./ai-sdk-utils.js";
 
 export interface RecollectCompactionMiddlewareOptions {
   model: LanguageModel;
   memory: MemoryLayer;
   resolveSessionId?: (
+    params: LanguageModelV3CallOptions,
+  ) => string | undefined | Promise<string | undefined>;
+  resolveSessionRunId?: (
     params: LanguageModelV3CallOptions,
   ) => string | undefined | Promise<string | undefined>;
   preCompact?: boolean;
@@ -25,82 +35,11 @@ function defaultResolveSessionId(
   return providerOptions?.recollect?.sessionId as string | undefined;
 }
 
-function shouldRunPostCompaction(
-  result: unknown,
-  strategy: "follow-up-only" | "always",
-): boolean {
-  if (strategy === "always") {
-    return true;
-  }
-  const rawFinishReason = (result as any)?.finishReason;
-  const finishReason =
-    typeof rawFinishReason === "string"
-      ? rawFinishReason
-      : typeof rawFinishReason?.unified === "string"
-        ? rawFinishReason.unified
-        : String(rawFinishReason ?? "");
-  return finishReason === "tool-calls" || finishReason === "length";
-}
-
-function serializeMessage(message: LanguageModelV3Message): string {
-  return JSON.stringify(message);
-}
-
-async function appendUnseenMessages(
-  memory: MemoryLayer,
-  sessionId: string,
-  messages: LanguageModelV3Message[],
-): Promise<void> {
-  if (messages.length === 0) {
-    return;
-  }
-
-  const existing = await memory.getMessages(sessionId);
-  const seen = new Set(existing.map(serializeMessage));
-  const unseen: LanguageModelV3Message[] = [];
-
-  for (const message of messages) {
-    const key = serializeMessage(message);
-    if (seen.has(key)) {
-      continue;
-    }
-    unseen.push(message);
-    seen.add(key);
-  }
-
-  if (unseen.length > 0) {
-    await memory.addMessages(sessionId, unseen);
-  }
-}
-
-function collectGeneratedMessages(result: unknown): LanguageModelV3Message[] {
-  const messages: LanguageModelV3Message[] = [];
-  const steps = Array.isArray((result as any)?.steps)
-    ? (result as any).steps
-    : [];
-  for (const step of steps) {
-    const stepMessages = Array.isArray(step?.response?.messages)
-      ? (step.response.messages as LanguageModelV3Message[])
-      : [];
-    messages.push(...stepMessages);
-  }
-
-  const responseMessages = Array.isArray((result as any)?.response?.messages)
-    ? ((result as any).response.messages as LanguageModelV3Message[])
-    : [];
-  messages.push(...responseMessages);
-
-  const content = Array.isArray((result as any)?.content)
-    ? (result as any).content
-    : [];
-  if (content.length > 0) {
-    messages.push({
-      role: "assistant",
-      content,
-    } as LanguageModelV3Message);
-  }
-
-  return messages;
+function defaultResolveSessionRunId(
+  params: LanguageModelV3CallOptions,
+): string | undefined {
+  const providerOptions = params?.providerOptions;
+  return providerOptions?.recollect?.sessionRunId as string | undefined;
 }
 
 export function withRecollectCompaction(
@@ -110,37 +49,119 @@ export function withRecollectCompaction(
     model,
     memory,
     resolveSessionId = defaultResolveSessionId,
+    resolveSessionRunId = defaultResolveSessionRunId,
     preCompact = true,
     postCompact = true,
     postCompactStrategy = "follow-up-only",
     onMemoryError,
   } = options;
+  const promptRunsSeen = new Set<string>();
+  const generatedRunsSeen = new Set<string>();
+  const maxRunKeys = 5000;
+
+  function markSeen(set: Set<string>, key: string): void {
+    if (set.has(key)) {
+      return;
+    }
+    set.add(key);
+    if (set.size <= maxRunKeys) {
+      return;
+    }
+    const oldest = set.values().next().value as string | undefined;
+    if (oldest) {
+      set.delete(oldest);
+    }
+  }
+
+  async function getRunKey(
+    params: LanguageModelV3CallOptions,
+    sessionId: string,
+  ): Promise<string | null> {
+    const sessionRunId = await resolveSessionRunId(params);
+    return sessionRunId ? `${sessionId}::${sessionRunId}` : null;
+  }
+
+  function shouldProcessRun(seen: Set<string>, runKey: string | null): boolean {
+    return !runKey || !seen.has(runKey);
+  }
+
+  function markProcessedRun(seen: Set<string>, runKey: string | null): void {
+    if (runKey) {
+      markSeen(seen, runKey);
+    }
+  }
+
+  async function ingestPromptAndHydrate(
+    params: LanguageModelV3CallOptions,
+  ): Promise<LanguageModelV3CallOptions> {
+    const sessionId = await resolveSessionId(params);
+    if (!sessionId) {
+      return params;
+    }
+
+    const runKey = await getRunKey(params, sessionId);
+    const prompt = Array.isArray(params.prompt)
+      ? (params.prompt as LanguageModelV3Message[])
+      : [];
+
+    if (shouldProcessRun(promptRunsSeen, runKey)) {
+      const existing = await memory.getMessages(sessionId);
+      const promptSuffix = findPromptSuffixToAppend(existing, prompt);
+      if (promptSuffix.length > 0) {
+        await memory.addMessages(sessionId, promptSuffix);
+      }
+
+      if (preCompact) {
+        await memory.compactIfNeeded(sessionId, {
+          mode: "auto-pre",
+          reason: "pre_sampling_compaction",
+        });
+      }
+      markProcessedRun(promptRunsSeen, runKey);
+    }
+
+    const hydratedRaw = await memory.getPromptMessages(sessionId);
+    const hydrated = normalizeMessages(hydratedRaw);
+    return {
+      ...params,
+      prompt: hydrated as any,
+    };
+  }
+
+  async function ingestGeneratedAndMaybeCompact(
+    params: LanguageModelV3CallOptions,
+    result: unknown,
+  ): Promise<void> {
+    const sessionId = await resolveSessionId(params);
+    if (!sessionId) {
+      return;
+    }
+
+    const runKey = await getRunKey(params, sessionId);
+    if (!shouldProcessRun(generatedRunsSeen, runKey)) {
+      return;
+    }
+
+    const generatedMessages = collectGeneratedMessages(result);
+    const generatedUnique = uniqueWithinBatch(generatedMessages);
+    if (generatedUnique.length > 0) {
+      await memory.addMessages(sessionId, generatedUnique);
+    }
+
+    if (postCompact && shouldRunPostCompaction(result, postCompactStrategy)) {
+      await memory.compactIfNeeded(sessionId, {
+        mode: "auto-post",
+        reason: "post_sampling_compaction",
+      });
+    }
+    markProcessedRun(generatedRunsSeen, runKey);
+  }
 
   const middleware: LanguageModelMiddleware = {
     specificationVersion: "v3",
     transformParams: async ({ params }) => {
       try {
-        const sessionId = await resolveSessionId(params);
-        if (sessionId) {
-          const prompt = Array.isArray(params.prompt)
-            ? (params.prompt as LanguageModelV3Message[])
-            : [];
-
-          await appendUnseenMessages(memory, sessionId, prompt);
-
-          if (preCompact) {
-            await memory.compactIfNeeded(sessionId, {
-              mode: "auto-pre",
-              reason: "pre_sampling_compaction",
-            });
-          }
-
-          const hydrated = await memory.getPromptMessages(sessionId);
-          return {
-            ...params,
-            prompt: hydrated as any,
-          };
-        }
+        return await ingestPromptAndHydrate(params);
       } catch (error) {
         onMemoryError?.(error);
       }
@@ -150,21 +171,7 @@ export function withRecollectCompaction(
     wrapGenerate: async ({ doGenerate, params }) => {
       const result = await doGenerate();
       try {
-        const sessionId = await resolveSessionId(params);
-        if (sessionId) {
-          const generatedMessages = collectGeneratedMessages(result);
-          await appendUnseenMessages(memory, sessionId, generatedMessages);
-
-          if (
-            postCompact &&
-            shouldRunPostCompaction(result, postCompactStrategy)
-          ) {
-            await memory.compactIfNeeded(sessionId, {
-              mode: "auto-post",
-              reason: "post_sampling_compaction",
-            });
-          }
-        }
+        await ingestGeneratedAndMaybeCompact(params, result);
       } catch (error) {
         onMemoryError?.(error);
       }
