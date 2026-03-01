@@ -111,17 +111,23 @@ const model = withRecollectCompaction({
 await generateText({
   model,
   messages: [{ role: "user", content: "Continue." }],
-  providerOptions: { recollect: { sessionId: "chat:user-123" } },
+  providerOptions: {
+    recollect: {
+      userId: "user-123",
+      sessionId: "run-2026-03-01-001",
+    },
+  },
 });
 ```
 
 ### Session ID Resolution
 
-By default, middleware reads session id from:
+By default, middleware reads:
 
-- `providerOptions.recollect.sessionId`
+- `providerOptions.recollect.userId` as conversation identity
+- `providerOptions.recollect.sessionId` as run identity (idempotency per run)
 
-You can override via `resolveSessionId(params)`.
+You can override via `resolveUserId(params)` and `resolveSessionId(params)`.
 
 ## API Overview
 

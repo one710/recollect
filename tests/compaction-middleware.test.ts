@@ -5,6 +5,114 @@ import { InMemoryStorageAdapter } from "../src/storage.js";
 import { withRecollectCompaction } from "../src/ai-sdk.js";
 
 describe("withRecollectCompaction", () => {
+  test("keeps first system message and skips later system messages by default", async () => {
+    const sessionId = "compaction-skip-system-default-" + Date.now();
+    const baseModel: any = {
+      specificationVersion: "v3",
+      modelId: "mock-model",
+      provider: "mock-provider",
+      doGenerate: jest.fn<any>().mockResolvedValue({
+        content: [{ type: "text", text: "ok" }],
+        finishReason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        warnings: [],
+        request: {},
+        response: {
+          id: "resp-skip-system",
+          timestamp: new Date(),
+          modelId: "mock-model",
+        },
+      }),
+      doStream: jest.fn<any>(),
+    };
+
+    const memory = new MemoryLayer({
+      maxTokens: 500,
+      summarizationModel: baseModel,
+      storage: new InMemoryStorageAdapter(),
+    });
+    const model = withRecollectCompaction({
+      model: baseModel,
+      memory,
+      preCompact: true,
+      postCompact: false,
+    });
+
+    await generateText({
+      model: model as any,
+      messages: [
+        { role: "system", content: "Primary system instruction." },
+        { role: "system", content: "Secondary system instruction." },
+        { role: "user", content: "Hello" },
+      ],
+      providerOptions: { recollect: { userId: sessionId } },
+    });
+
+    const history = await memory.getMessages(sessionId);
+    const systemMessages = history.filter(
+      (message: any) => message.role === "system",
+    );
+    expect(systemMessages).toHaveLength(1);
+    expect(systemMessages[0]?.content).toBe("Primary system instruction.");
+    expect(history.some((message: any) => message.role === "user")).toBe(true);
+
+    await memory.dispose();
+  });
+
+  test("can include system messages from incoming history when configured", async () => {
+    const sessionId = "compaction-keep-system-optin-" + Date.now();
+    const baseModel: any = {
+      specificationVersion: "v3",
+      modelId: "mock-model",
+      provider: "mock-provider",
+      doGenerate: jest.fn<any>().mockResolvedValue({
+        content: [{ type: "text", text: "ok" }],
+        finishReason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        warnings: [],
+        request: {},
+        response: {
+          id: "resp-keep-system",
+          timestamp: new Date(),
+          modelId: "mock-model",
+        },
+      }),
+      doStream: jest.fn<any>(),
+    };
+
+    const memory = new MemoryLayer({
+      maxTokens: 500,
+      summarizationModel: baseModel,
+      storage: new InMemoryStorageAdapter(),
+    });
+    const model = withRecollectCompaction({
+      model: baseModel,
+      memory,
+      preCompact: true,
+      postCompact: false,
+      skipSystemMessagesInHistory: false,
+    });
+
+    await generateText({
+      model: model as any,
+      messages: [
+        { role: "system", content: "Primary system instruction." },
+        { role: "system", content: "Secondary system instruction." },
+        { role: "user", content: "Hello" },
+      ],
+      providerOptions: { recollect: { userId: sessionId } },
+    });
+
+    const history = await memory.getMessages(sessionId);
+    const systemMessages = history.filter(
+      (message: any) => message.role === "system",
+    );
+    expect(systemMessages).toHaveLength(2);
+    expect(history.some((message: any) => message.role === "user")).toBe(true);
+
+    await memory.dispose();
+  });
+
   test("hydrates prompt from memory after auto-ingesting transport messages", async () => {
     const sessionId = "compaction-hydrate-" + Date.now();
     const baseModel: any = {
@@ -43,7 +151,7 @@ describe("withRecollectCompaction", () => {
     await generateText({
       model: model as any,
       messages: [{ role: "user", content: "Incoming request message" }],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const lastCall = baseModel.doGenerate.mock.calls.at(-1)?.[0];
@@ -113,7 +221,7 @@ describe("withRecollectCompaction", () => {
     await generateText({
       model: model as any,
       messages: [{ role: "user", content: "Hello" }],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const events = await memory.getSessionEvents(sessionId, 20);
@@ -165,7 +273,7 @@ describe("withRecollectCompaction", () => {
     await generateText({
       model: model as any,
       messages: [{ role: "user", content: "Hello" }],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const events = await memory.getSessionEvents(sessionId, 20);
@@ -218,7 +326,7 @@ describe("withRecollectCompaction", () => {
     await generateText({
       model: model as any,
       messages: [{ role: "user", content: "Hello" }],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const events = await memory.getSessionEvents(sessionId, 20);
@@ -269,7 +377,7 @@ describe("withRecollectCompaction", () => {
     await generateText({
       model: model as any,
       messages: [{ role: "user", content: "Should be auto-persisted" }],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const history = await memory.getMessages(sessionId);
@@ -338,7 +446,7 @@ describe("withRecollectCompaction", () => {
     await generateText({
       model: model as any,
       messages: [{ role: "user", content: "Hi" }],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const historyAfterFirstTurn = await memory.getMessages(sessionId);
@@ -348,7 +456,7 @@ describe("withRecollectCompaction", () => {
         ...(historyAfterFirstTurn as any),
         { role: "user", content: "Hi" },
       ],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const history = await memory.getMessages(sessionId);
@@ -433,7 +541,7 @@ describe("withRecollectCompaction", () => {
     await generateText({
       model: model as any,
       messages: [{ role: "user", content: "Run tool (transport only)" }],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const history = await memory.getMessages(sessionId);
@@ -513,7 +621,7 @@ describe("withRecollectCompaction", () => {
     await generateText({
       model: model as any,
       messages: [{ role: "user", content: "run tool" }],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     await generateText({
@@ -539,7 +647,7 @@ describe("withRecollectCompaction", () => {
         },
         { role: "user", content: "continue" },
       ],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId: sessionId } },
     });
 
     const secondCall = baseModel.doGenerate.mock.calls[1]?.[0];
@@ -565,9 +673,9 @@ describe("withRecollectCompaction", () => {
     await memory.dispose();
   });
 
-  test("uses sessionRunId to avoid duplicate ingestion on retries", async () => {
+  test("uses run sessionId to avoid duplicate ingestion on retries", async () => {
     const sessionId = "compaction-run-idempotent-" + Date.now();
-    const sessionRunId = "run-123";
+    const runSessionId = "run-123";
     const baseModel: any = {
       specificationVersion: "v3",
       modelId: "mock-model",
@@ -616,7 +724,9 @@ describe("withRecollectCompaction", () => {
     const params = {
       model: model as any,
       messages: [{ role: "user", content: "Hello once" }],
-      providerOptions: { recollect: { sessionId, sessionRunId } },
+      providerOptions: {
+        recollect: { userId: sessionId, sessionId: runSessionId },
+      },
     } as any;
 
     await generateText(params);
@@ -681,7 +791,7 @@ describe("withRecollectCompaction", () => {
       model: model as any,
       messages: [{ role: "user", content: "Answer briefly" }],
       providerOptions: {
-        recollect: { sessionId, sessionRunId: "run-reasoning" },
+        recollect: { userId: sessionId, sessionId: "run-reasoning" },
       },
     });
 
@@ -758,7 +868,7 @@ describe("withRecollectCompaction", () => {
       model: model as any,
       messages: [{ role: "user", content: [{ type: "text", text: turn1 }] }],
       providerOptions: {
-        recollect: { sessionId, sessionRunId: "shape-run-1" },
+        recollect: { userId: sessionId, sessionId: "shape-run-1" },
       },
     } as any);
 
@@ -781,7 +891,7 @@ describe("withRecollectCompaction", () => {
         { role: "user", content: turn2 },
       ],
       providerOptions: {
-        recollect: { sessionId, sessionRunId: "shape-run-2" },
+        recollect: { userId: sessionId, sessionId: "shape-run-2" },
       },
     } as any);
 

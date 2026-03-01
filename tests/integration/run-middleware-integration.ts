@@ -155,10 +155,10 @@ export async function runMiddlewareIntegrationSuite(
   });
 
   const runTurn = async (args: {
-    sessionId: string;
+    userId: string;
     messages: LanguageModelV3Message[];
     withTools?: boolean;
-    sessionRunId?: string;
+    sessionId?: string;
   }) => {
     return generateText({
       model: wrapped as any,
@@ -166,8 +166,8 @@ export async function runMiddlewareIntegrationSuite(
       ...(args.withTools ? { tools, maxSteps: 4 } : {}),
       providerOptions: {
         recollect: {
-          sessionId: args.sessionId,
-          sessionRunId: args.sessionRunId ?? randomUUID(),
+          userId: args.userId,
+          sessionId: args.sessionId ?? randomUUID(),
         },
       },
     } as any);
@@ -176,14 +176,14 @@ export async function runMiddlewareIntegrationSuite(
   console.log(`\nRunning middleware integration suite (${providerName})`);
 
   await runScenario("simple turn", async () => {
-    const sessionId = `it-${providerName}-simple-${randomUUID()}`;
+    const userId = `it-${providerName}-simple-${randomUUID()}`;
     const userText = "Explain compaction in one line.";
     await runTurn({
-      sessionId,
+      userId,
       messages: [userMessage(userText)],
-      sessionRunId: randomUUID(),
+      sessionId: randomUUID(),
     });
-    const history = await memory.getMessages(sessionId);
+    const history = await memory.getMessages(userId);
     assertCondition(
       countUserText(history, userText) === 1,
       "simple: user message missing",
@@ -195,21 +195,21 @@ export async function runMiddlewareIntegrationSuite(
   });
 
   await runScenario("multi turn with full history resend", async () => {
-    const sessionId = `it-${providerName}-multi-${randomUUID()}`;
+    const userId = `it-${providerName}-multi-${randomUUID()}`;
     const turn1 = "Give one sentence on long-chat memory.";
     await runTurn({
-      sessionId,
+      userId,
       messages: [userMessage(turn1)],
-      sessionRunId: randomUUID(),
+      sessionId: randomUUID(),
     });
-    const persistedAfterTurn1 = await memory.getMessages(sessionId);
+    const persistedAfterTurn1 = await memory.getMessages(userId);
     const turn2 = "Expand that into three bullets.";
     await runTurn({
-      sessionId,
+      userId,
       messages: [...persistedAfterTurn1, userMessage(turn2)],
-      sessionRunId: randomUUID(),
+      sessionId: randomUUID(),
     });
-    const history = await memory.getMessages(sessionId);
+    const history = await memory.getMessages(userId);
     assertCondition(
       countUserText(history, turn1) === 1,
       "multi: turn1 user duplicated or missing",
@@ -221,8 +221,8 @@ export async function runMiddlewareIntegrationSuite(
   });
 
   await runScenario("existing simple history", async () => {
-    const sessionId = `it-${providerName}-existing-simple-${randomUUID()}`;
-    await memory.addMessages(sessionId, [
+    const userId = `it-${providerName}-existing-simple-${randomUUID()}`;
+    await memory.addMessages(userId, [
       userMessage("Earlier question"),
       {
         role: "assistant",
@@ -231,11 +231,11 @@ export async function runMiddlewareIntegrationSuite(
     ]);
     const followup = "Continue from the earlier answer.";
     await runTurn({
-      sessionId,
+      userId,
       messages: [userMessage(followup)],
-      sessionRunId: randomUUID(),
+      sessionId: randomUUID(),
     });
-    const history = await memory.getMessages(sessionId);
+    const history = await memory.getMessages(userId);
     assertCondition(
       countUserText(history, followup) === 1,
       "existing simple: followup missing",
@@ -255,9 +255,9 @@ export async function runMiddlewareIntegrationSuite(
   });
 
   await runScenario("existing tool-call history", async () => {
-    const sessionId = `it-${providerName}-existing-tool-${randomUUID()}`;
+    const userId = `it-${providerName}-existing-tool-${randomUUID()}`;
     const toolCallId = `call-existing-${randomUUID().slice(0, 8)}`;
-    await memory.addMessages(sessionId, [
+    await memory.addMessages(userId, [
       userMessage("Fetch paid_subs_us_pct"),
       assistantToolCallMessage(toolCallId, "lookupMetric", {
         key: "paid_subs_us_pct",
@@ -268,12 +268,12 @@ export async function runMiddlewareIntegrationSuite(
       }),
     ]);
     await runTurn({
-      sessionId,
+      userId,
       messages: [userMessage("Explain that metric in one concise sentence.")],
       withTools: true,
-      sessionRunId: randomUUID(),
+      sessionId: randomUUID(),
     });
-    const history = await memory.getMessages(sessionId);
+    const history = await memory.getMessages(userId);
     assertCondition(
       countToolCall(history, toolCallId) === 1,
       "existing tool history: seeded tool-call missing or duplicated",
@@ -291,10 +291,10 @@ export async function runMiddlewareIntegrationSuite(
   await runScenario(
     "malformed existing history repaired by incoming prompt",
     async () => {
-      const sessionId = `it-${providerName}-malformed-${randomUUID()}`;
+      const userId = `it-${providerName}-malformed-${randomUUID()}`;
       const toolCallId = `call-repair-${randomUUID().slice(0, 8)}`;
       const seededUser = "Run lookupMetric and continue";
-      await memory.addMessages(sessionId, [
+      await memory.addMessages(userId, [
         userMessage(seededUser),
         assistantToolCallMessage(toolCallId, "lookupMetric", {
           key: "paid_subs_us_pct",
@@ -302,7 +302,7 @@ export async function runMiddlewareIntegrationSuite(
       ]);
 
       await runTurn({
-        sessionId,
+        userId,
         messages: [
           userMessage(seededUser),
           assistantToolCallMessage(toolCallId, "lookupMetric", {
@@ -315,10 +315,10 @@ export async function runMiddlewareIntegrationSuite(
           userMessage("Now finish with one sentence."),
         ],
         withTools: true,
-        sessionRunId: randomUUID(),
+        sessionId: randomUUID(),
       });
 
-      const history = await memory.getMessages(sessionId);
+      const history = await memory.getMessages(userId);
       assertCondition(
         countUserText(history, seededUser) === 1,
         "malformed repaired: seeded user duplicated",
@@ -335,20 +335,17 @@ export async function runMiddlewareIntegrationSuite(
   );
 
   await runScenario("missing assistant messages in prior history", async () => {
-    const sessionId = `it-${providerName}-missing-assistant-${randomUUID()}`;
+    const userId = `it-${providerName}-missing-assistant-${randomUUID()}`;
     const first = "Question without captured assistant reply #1";
     const second = "Question without captured assistant reply #2";
     const third = "Continue despite missing assistant turns.";
-    await memory.addMessages(sessionId, [
-      userMessage(first),
-      userMessage(second),
-    ]);
+    await memory.addMessages(userId, [userMessage(first), userMessage(second)]);
     await runTurn({
-      sessionId,
+      userId,
       messages: [userMessage(third)],
-      sessionRunId: randomUUID(),
+      sessionId: randomUUID(),
     });
-    const history = await memory.getMessages(sessionId);
+    const history = await memory.getMessages(userId);
     assertCondition(
       countUserText(history, first) === 1 &&
         countUserText(history, second) === 1 &&
@@ -361,59 +358,59 @@ export async function runMiddlewareIntegrationSuite(
     );
   });
 
-  await runScenario("sessionRunId retry idempotency", async () => {
-    const sessionId = `it-${providerName}-run-idempotency-${randomUUID()}`;
-    const runId = `run-${randomUUID()}`;
+  await runScenario("run id retry idempotency", async () => {
+    const userId = `it-${providerName}-run-idempotency-${randomUUID()}`;
+    const sessionId = `run-${randomUUID()}`;
     const userText = "Reply with exactly: OK";
 
     await runTurn({
-      sessionId,
+      userId,
       messages: [userMessage(userText)],
-      sessionRunId: runId,
+      sessionId,
     });
 
     // Simulate retry of the same run with identical run id.
     await runTurn({
-      sessionId,
+      userId,
       messages: [userMessage(userText)],
-      sessionRunId: runId,
+      sessionId,
     });
 
-    const history = await memory.getMessages(sessionId);
+    const history = await memory.getMessages(userId);
     const userCount = countUserText(history, userText);
     const assistantCount = history.filter(
       (message) => message.role === "assistant",
     ).length;
     assertCondition(
       userCount === 1,
-      "sessionRunId idempotency: user ingested more than once",
+      "run id idempotency: user ingested more than once",
     );
     assertCondition(
       assistantCount === 1,
-      "sessionRunId idempotency: assistant ingested more than once",
+      "run id idempotency: assistant ingested more than once",
     );
   });
 
   await runScenario(
     "repeated user text across different runs is preserved",
     async () => {
-      const sessionId = `it-${providerName}-repeat-user-${randomUUID()}`;
+      const userId = `it-${providerName}-repeat-user-${randomUUID()}`;
       const repeated = "Hi";
 
       await runTurn({
-        sessionId,
+        userId,
         messages: [userMessage(repeated)],
-        sessionRunId: `run-${randomUUID()}`,
+        sessionId: `run-${randomUUID()}`,
       });
 
-      const historyAfterFirst = await memory.getMessages(sessionId);
+      const historyAfterFirst = await memory.getMessages(userId);
       await runTurn({
-        sessionId,
+        userId,
         messages: [...historyAfterFirst, userMessage(repeated)],
-        sessionRunId: `run-${randomUUID()}`,
+        sessionId: `run-${randomUUID()}`,
       });
 
-      const history = await memory.getMessages(sessionId);
+      const history = await memory.getMessages(userId);
       const userCount = countUserText(history, repeated);
       assertCondition(
         userCount === 2,
@@ -438,7 +435,7 @@ export async function runMiddlewareIntegrationSuite(
       postCompact: true,
       postCompactStrategy: "always",
     });
-    const sessionId = `it-${providerName}-compaction-${randomUUID()}`;
+    const userId = `it-${providerName}-compaction-${randomUUID()}`;
     const largeText =
       "Compaction candidate sentence: preserving intent, constraints, and unresolved work while reducing token volume. ";
 
@@ -457,18 +454,18 @@ export async function runMiddlewareIntegrationSuite(
         },
       );
     }
-    await compactionMemory.addMessages(sessionId, seedHistory);
+    await compactionMemory.addMessages(userId, seedHistory);
 
     await generateText({
       model: compactionWrapped as any,
       messages: [
         userMessage("Continue after compaction with one concise line.") as any,
       ],
-      providerOptions: { recollect: { sessionId } },
+      providerOptions: { recollect: { userId, sessionId: randomUUID() } },
     } as any);
 
-    const events = await compactionMemory.getSessionEvents(sessionId, 200);
-    const snapshot = await compactionMemory.getSessionSnapshot(sessionId);
+    const events = await compactionMemory.getSessionEvents(userId, 200);
+    const snapshot = await compactionMemory.getSessionSnapshot(userId);
     const hasAppliedCompaction = events.some(
       (event) => event.type === "compaction_applied",
     );

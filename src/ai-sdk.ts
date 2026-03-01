@@ -16,16 +16,24 @@ import {
 export interface RecollectCompactionMiddlewareOptions {
   model: LanguageModel;
   memory: MemoryLayer;
-  resolveSessionId?: (
+  resolveUserId?: (
     params: LanguageModelV3CallOptions,
   ) => string | undefined | Promise<string | undefined>;
-  resolveSessionRunId?: (
+  resolveSessionId?: (
     params: LanguageModelV3CallOptions,
   ) => string | undefined | Promise<string | undefined>;
   preCompact?: boolean;
   postCompact?: boolean;
   postCompactStrategy?: "follow-up-only" | "always";
+  skipSystemMessagesInHistory?: boolean;
   onMemoryError?: (error: unknown) => void;
+}
+
+function defaultResolveUserId(
+  params: LanguageModelV3CallOptions,
+): string | undefined {
+  const providerOptions = params?.providerOptions;
+  return providerOptions?.recollect?.userId as string | undefined;
 }
 
 function defaultResolveSessionId(
@@ -35,24 +43,18 @@ function defaultResolveSessionId(
   return providerOptions?.recollect?.sessionId as string | undefined;
 }
 
-function defaultResolveSessionRunId(
-  params: LanguageModelV3CallOptions,
-): string | undefined {
-  const providerOptions = params?.providerOptions;
-  return providerOptions?.recollect?.sessionRunId as string | undefined;
-}
-
 export function withRecollectCompaction(
   options: RecollectCompactionMiddlewareOptions,
 ): LanguageModel {
   const {
     model,
     memory,
+    resolveUserId = defaultResolveUserId,
     resolveSessionId = defaultResolveSessionId,
-    resolveSessionRunId = defaultResolveSessionRunId,
     preCompact = true,
     postCompact = true,
     postCompactStrategy = "follow-up-only",
+    skipSystemMessagesInHistory = true,
     onMemoryError,
   } = options;
   const promptRunsSeen = new Set<string>();
@@ -75,10 +77,10 @@ export function withRecollectCompaction(
 
   async function getRunKey(
     params: LanguageModelV3CallOptions,
-    sessionId: string,
+    userId: string,
   ): Promise<string | null> {
-    const sessionRunId = await resolveSessionRunId(params);
-    return sessionRunId ? `${sessionId}::${sessionRunId}` : null;
+    const sessionId = await resolveSessionId(params);
+    return sessionId ? `${userId}::${sessionId}` : null;
   }
 
   function shouldProcessRun(seen: Set<string>, runKey: string | null): boolean {
@@ -94,25 +96,30 @@ export function withRecollectCompaction(
   async function ingestPromptAndHydrate(
     params: LanguageModelV3CallOptions,
   ): Promise<LanguageModelV3CallOptions> {
-    const sessionId = await resolveSessionId(params);
-    if (!sessionId) {
+    const userId = await resolveUserId(params);
+    if (!userId) {
       return params;
     }
 
-    const runKey = await getRunKey(params, sessionId);
+    const runKey = await getRunKey(params, userId);
     const prompt = Array.isArray(params.prompt)
       ? (params.prompt as LanguageModelV3Message[])
       : [];
+    const promptHistory = skipSystemMessagesInHistory
+      ? prompt.filter(
+          (message, index) => index === 0 || message.role !== "system",
+        )
+      : prompt;
 
     if (shouldProcessRun(promptRunsSeen, runKey)) {
-      const existing = await memory.getMessages(sessionId);
-      const promptSuffix = findPromptSuffixToAppend(existing, prompt);
+      const existing = await memory.getMessages(userId);
+      const promptSuffix = findPromptSuffixToAppend(existing, promptHistory);
       if (promptSuffix.length > 0) {
-        await memory.addMessages(sessionId, promptSuffix);
+        await memory.addMessages(userId, promptSuffix);
       }
 
       if (preCompact) {
-        await memory.compactIfNeeded(sessionId, {
+        await memory.compactIfNeeded(userId, {
           mode: "auto-pre",
           reason: "pre_sampling_compaction",
         });
@@ -120,7 +127,7 @@ export function withRecollectCompaction(
       markProcessedRun(promptRunsSeen, runKey);
     }
 
-    const hydratedRaw = await memory.getPromptMessages(sessionId);
+    const hydratedRaw = await memory.getPromptMessages(userId);
     const hydrated = normalizeMessages(hydratedRaw);
     return {
       ...params,
@@ -132,12 +139,12 @@ export function withRecollectCompaction(
     params: LanguageModelV3CallOptions,
     result: unknown,
   ): Promise<void> {
-    const sessionId = await resolveSessionId(params);
-    if (!sessionId) {
+    const userId = await resolveUserId(params);
+    if (!userId) {
       return;
     }
 
-    const runKey = await getRunKey(params, sessionId);
+    const runKey = await getRunKey(params, userId);
     if (!shouldProcessRun(generatedRunsSeen, runKey)) {
       return;
     }
@@ -145,11 +152,11 @@ export function withRecollectCompaction(
     const generatedMessages = collectGeneratedMessages(result);
     const generatedUnique = uniqueWithinBatch(generatedMessages);
     if (generatedUnique.length > 0) {
-      await memory.addMessages(sessionId, generatedUnique);
+      await memory.addMessages(userId, generatedUnique);
     }
 
     if (postCompact && shouldRunPostCompaction(result, postCompactStrategy)) {
-      await memory.compactIfNeeded(sessionId, {
+      await memory.compactIfNeeded(userId, {
         mode: "auto-post",
         reason: "post_sampling_compaction",
       });
