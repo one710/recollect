@@ -1,6 +1,6 @@
 {
   "name": "@one710/recollect",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Auto-summarizing memory layer for AI agents using Node.js native SQLite.",
   "license": "MIT",
   "author": "one710",
@@ -17,7 +17,6 @@
     "memory",
     "summarization",
     "sqlite",
-    "ai-sdk",
     "history"
   ],
   "type": "module",
@@ -36,21 +35,16 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-    "test:integration:openai": "tsx tests/integration/middleware-integration-openai.ts",
-    "test:integration:bedrock": "tsx tests/integration/middleware-integration-bedrock.ts"
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest"
   },
   "devDependencies": {
-    "@ai-sdk/amazon-bedrock": "^4.0.69",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.3.0",
     "jest": "^30.2.0",
     "jest-environment-node": "^30.2.0",
     "sqlite3": "^5.1.7",
     "ts-jest": "^29.4.6",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
-    "zod": "^4.3.6"
+    "typescript": "^5.9.3"
   },
   "peerDependencies": {
     "sqlite3": "^5.1.7"
@@ -61,8 +55,6 @@
     }
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.37",
-    "ai": "^6.0.0",
     "ai-tokenizer": "^1.0.6"
   }
 }

@@ -1,6 +1,6 @@
 import { describe, test, expect } from "@jest/globals";
 import { countTokens, countMessagesTokens } from "../src/tokenizer.js";
-import type { LanguageModelV3Message } from "@ai-sdk/provider";
+import type { RecollectMessage } from "../src/types.js";
 
 describe("Tokenizer", () => {
   test("countTokens should count tokens in a string", () => {
@@ -15,7 +15,7 @@ describe("Tokenizer", () => {
       { role: "user", content: [{ type: "text", text: "Hello" }] },
       { role: "assistant", content: [{ type: "text", text: "Hi there!" }] },
     ];
-    const count = countMessagesTokens(messages as LanguageModelV3Message[]);
+    const count = countMessagesTokens(messages as RecollectMessage[]);
     // Hello (1) + Hi there! (3) + 2 * overhead (4) = 12
     expect(count).toBe(12);
   });
@@ -26,7 +26,7 @@ describe("Tokenizer", () => {
     ];
     const customCounter = (text: string) => text.length;
     const count = countMessagesTokens(
-      messages as LanguageModelV3Message[],
+      messages as RecollectMessage[],
       customCounter,
     );
     // "Hello" (5) + overhead (4) = 9

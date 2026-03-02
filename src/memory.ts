@@ -1,7 +1,10 @@
-import type { LanguageModel } from "ai";
-import type { LanguageModelV3Message } from "@ai-sdk/provider";
 import { countMessagesTokens } from "./tokenizer.js";
-import { summarizeConversation, SUMMARY_MESSAGE_PREFIX } from "./summarizer.js";
+import {
+  summarizeConversation,
+  type SummarizeCallable,
+  SUMMARY_MESSAGE_PREFIX,
+} from "./summarizer.js";
+import type { RecollectMessage } from "./types.js";
 import {
   createSQLiteStorageAdapter,
   type MemoryStorageAdapter,
@@ -22,9 +25,9 @@ export interface MemoryLayerOptions {
    */
   maxTokens: number;
   /**
-   * The AI SDK language model to use for summarization.
+   * Callback that generates a summary from rendered transcript text.
    */
-  summarizationModel: LanguageModel;
+  summarize: SummarizeCallable;
   /**
    * The percentage of maxTokens (0.0 to 1.0) that triggers auto-summarization.
    * Defaults to 0.9.
@@ -76,9 +79,9 @@ export interface MemoryLayerOptions {
 }
 
 interface CompactionPlan {
-  head: LanguageModelV3Message[];
-  summarizeSlice: LanguageModelV3Message[];
-  tail: LanguageModelV3Message[];
+  head: RecollectMessage[];
+  summarizeSlice: RecollectMessage[];
+  tail: RecollectMessage[];
   existingSummary: string | null;
 }
 
@@ -98,7 +101,7 @@ export interface CompactionEvent {
 }
 
 export interface SessionSnapshot {
-  messages: LanguageModelV3Message[];
+  messages: RecollectMessage[];
   tokenCount: number;
   stats: SessionStats;
 }
@@ -113,7 +116,7 @@ export class MemoryLayer {
   private storage: MemoryStorageAdapter | null;
   private storageReady: Promise<void>;
   private maxTokens: number;
-  private summarizationModel: LanguageModel;
+  private summarize: SummarizeCallable;
   private threshold: number;
   private customCountTokens?: ((text: string) => number) | undefined;
   private targetTokensAfterCompaction: number;
@@ -128,7 +131,7 @@ export class MemoryLayer {
     this.storageReady = this.initializeStorage(options);
 
     this.maxTokens = options.maxTokens;
-    this.summarizationModel = options.summarizationModel;
+    this.summarize = options.summarize;
     this.threshold = options.threshold ?? DEFAULT_THRESHOLD;
     this.customCountTokens = options.countTokens;
     this.targetTokensAfterCompaction =
@@ -181,10 +184,10 @@ export class MemoryLayer {
    */
   async addMessage(
     sessionId: string,
-    role: LanguageModelV3Message["role"] | null,
-    contentOrMessage: string | LanguageModelV3Message,
+    role: RecollectMessage["role"] | null,
+    contentOrMessage: string | RecollectMessage,
   ): Promise<void> {
-    let message: LanguageModelV3Message;
+    let message: RecollectMessage;
 
     if (role === null) {
       if (typeof contentOrMessage === "string") {
@@ -204,10 +207,7 @@ export class MemoryLayer {
         throw new Error("Tool role requires a structured message object.");
       } else {
         message = {
-          role: role as Exclude<
-            LanguageModelV3Message["role"],
-            "system" | "tool"
-          >,
+          role: role as Exclude<RecollectMessage["role"], "system" | "tool">,
           content: [{ type: "text", text: contentOrMessage }],
         };
       }
@@ -223,7 +223,7 @@ export class MemoryLayer {
    */
   async addMessages(
     sessionId: string,
-    messages: LanguageModelV3Message[],
+    messages: RecollectMessage[],
   ): Promise<void> {
     await this.ensureReady();
     await this.appendAndMaybeCompact(sessionId, messages, "messages_appended", {
@@ -234,16 +234,14 @@ export class MemoryLayer {
   /**
    * Returns the persisted memory for this session (suitable as model prompt).
    */
-  async getPromptMessages(
-    sessionId: string,
-  ): Promise<LanguageModelV3Message[]> {
+  async getPromptMessages(sessionId: string): Promise<RecollectMessage[]> {
     return this.getMessages(sessionId);
   }
 
   /**
    * Fetches the current chat history for a session.
    */
-  async getMessages(sessionId: string): Promise<LanguageModelV3Message[]> {
+  async getMessages(sessionId: string): Promise<RecollectMessage[]> {
     await this.ensureReady();
     return this.requireStorage().listMessages(sessionId);
   }
@@ -292,15 +290,15 @@ export class MemoryLayer {
     return Math.max(1, Math.floor(this.maxTokens * this.threshold));
   }
 
-  private messageTokens(messages: LanguageModelV3Message[]): number {
+  private messageTokens(messages: RecollectMessage[]): number {
     return countMessagesTokens(messages, this.customCountTokens);
   }
 
-  private isPinnedInstructionRole(message: LanguageModelV3Message): boolean {
+  private isPinnedInstructionRole(message: RecollectMessage): boolean {
     return message.role === "system" || (message as any).role === "developer";
   }
 
-  private isSummaryMessage(message: LanguageModelV3Message): boolean {
+  private isSummaryMessage(message: RecollectMessage): boolean {
     return (
       message.role === "system" &&
       typeof message.content === "string" &&
@@ -317,8 +315,8 @@ export class MemoryLayer {
   }
 
   private leadingCanonicalContext(
-    messages: LanguageModelV3Message[],
-  ): LanguageModelV3Message[] {
+    messages: RecollectMessage[],
+  ): RecollectMessage[] {
     let idx = 0;
     while (
       idx < messages.length &&
@@ -331,7 +329,7 @@ export class MemoryLayer {
 
   private async ensureCanonicalContextSnapshot(
     sessionId: string,
-    history: LanguageModelV3Message[],
+    history: RecollectMessage[],
   ): Promise<void> {
     const stats = await this.requireStorage().getStats(sessionId);
     if (stats.canonicalContext && stats.canonicalContext.length > 0) {
@@ -353,7 +351,7 @@ export class MemoryLayer {
 
   private async appendAndMaybeCompact(
     sessionId: string,
-    messages: LanguageModelV3Message[],
+    messages: RecollectMessage[],
     eventType: SessionEvent["type"],
     payload: Record<string, unknown>,
   ): Promise<void> {
@@ -383,8 +381,8 @@ export class MemoryLayer {
   }
 
   private planCompaction(
-    messages: LanguageModelV3Message[],
-    canonicalContext: LanguageModelV3Message[] | null,
+    messages: RecollectMessage[],
+    canonicalContext: RecollectMessage[] | null,
   ): CompactionPlan | null {
     if (messages.length < this.minimumMessagesToCompact) {
       return null;
@@ -446,7 +444,7 @@ export class MemoryLayer {
 
   private async compactSession(
     sessionId: string,
-    initialHistory: LanguageModelV3Message[],
+    initialHistory: RecollectMessage[],
     options: CompactOptions,
   ): Promise<void> {
     let history = initialHistory;
@@ -507,7 +505,7 @@ export class MemoryLayer {
 
       const summary = await summarizeConversation(
         plan.summarizeSlice,
-        this.summarizationModel,
+        this.summarize,
         {
           existingSummary: plan.existingSummary,
           reason:
@@ -515,7 +513,7 @@ export class MemoryLayer {
         },
       );
 
-      const summaryMessage: LanguageModelV3Message = {
+      const summaryMessage: RecollectMessage = {
         role: "system",
         content: `${SUMMARY_MESSAGE_PREFIX}\n${summary.trim()}`,
       };

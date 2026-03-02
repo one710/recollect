@@ -1,5 +1,5 @@
 import sqlite3 from "sqlite3";
-import type { LanguageModelV3Message } from "@ai-sdk/provider";
+import type { RecollectMessage } from "../types.js";
 import type {
   MemoryStorageAdapter,
   SessionEvent,
@@ -75,7 +75,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
 
   async appendMessage(
     sessionId: string,
-    message: LanguageModelV3Message,
+    message: RecollectMessage,
   ): Promise<void> {
     await this.run(
       "INSERT INTO messages (sessionId, role, data) VALUES (?, ?, ?)",
@@ -83,7 +83,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
     );
   }
 
-  async listMessages(sessionId: string): Promise<LanguageModelV3Message[]> {
+  async listMessages(sessionId: string): Promise<RecollectMessage[]> {
     const rows = await this.all<{
       id: number;
       data: string;
@@ -93,7 +93,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
 
     return rows.map((row) => {
       try {
-        return JSON.parse(row.data) as LanguageModelV3Message;
+        return JSON.parse(row.data) as RecollectMessage;
       } catch (error) {
         throw new Error(
           `Invalid message JSON in session '${sessionId}' row ${row.id}: ${(error as Error).message}`,
@@ -104,7 +104,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
 
   async replaceMessages(
     sessionId: string,
-    messages: LanguageModelV3Message[],
+    messages: RecollectMessage[],
   ): Promise<void> {
     await this.exec("BEGIN TRANSACTION");
     try {
@@ -178,7 +178,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
       lastCompactionTokensAfter: row.lastCompactionTokensAfter ?? null,
       lastCompactionReason: row.lastCompactionReason ?? null,
       canonicalContext: row.canonicalContext
-        ? (JSON.parse(row.canonicalContext) as LanguageModelV3Message[])
+        ? (JSON.parse(row.canonicalContext) as RecollectMessage[])
         : null,
     };
   }

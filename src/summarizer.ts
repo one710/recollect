@@ -1,10 +1,8 @@
-import { generateText } from "ai";
-import type { LanguageModel } from "ai";
-import type { LanguageModelV3Message } from "@ai-sdk/provider";
+import type { RecollectMessage } from "./types.js";
 
 export const SUMMARY_MESSAGE_PREFIX = "Conversation checkpoint summary";
 
-const SYETEM_INSTRUCTIONS = `
+export const SUMMARY_INSTRUCTIONS = `
 You produce checkpoint summaries for long-running AI conversations.
 Preserve user intent, constraints, decisions, unresolved tasks, important tool outputs, and known failures.
 Use concise bullet points grouped by: Goals, Decisions, Constraints, Pending Work, and Risks.
@@ -17,7 +15,17 @@ export interface SummarizeConversationOptions {
   maxInputCharacters?: number;
 }
 
-function renderMessage(message: LanguageModelV3Message): string {
+export interface SummaryRequest {
+  instructions: string;
+  summaryPrompt: string;
+  messages: RecollectMessage[];
+}
+
+export type SummarizeCallable = (
+  request: SummaryRequest,
+) => Promise<string> | string;
+
+function renderMessage(message: RecollectMessage): string {
   let content = "";
 
   if (typeof message.content === "string") {
@@ -25,7 +33,9 @@ function renderMessage(message: LanguageModelV3Message): string {
   } else if (Array.isArray(message.content)) {
     content = message.content
       .map((part) => {
-        if (part.type === "text") return part.text;
+        if (part.type === "text" && typeof part.text === "string") {
+          return part.text;
+        }
         if (part.type === "file")
           return `[File: ${part.filename || "unnamed"}]`;
         if (part.type === "tool-result") {
@@ -34,7 +44,9 @@ function renderMessage(message: LanguageModelV3Message): string {
         }
         return "";
       })
-      .filter((line) => line.length > 0)
+      .filter(
+        (line): line is string => typeof line === "string" && line.length > 0,
+      )
       .join(" ");
   }
 
@@ -59,8 +71,8 @@ function renderMessage(message: LanguageModelV3Message): string {
  * Summarizes a conversation history using a provided language model.
  */
 export async function summarizeConversation(
-  messages: LanguageModelV3Message[],
-  model: LanguageModel,
+  messages: RecollectMessage[],
+  summarize: SummarizeCallable,
   options: SummarizeConversationOptions = {},
 ): Promise<string> {
   const maxInputCharacters = Math.max(
@@ -76,17 +88,18 @@ export async function summarizeConversation(
     ? `Existing prior summary:\n${options.existingSummary.trim()}\n\n`
     : "";
 
-  const { text } = await generateText({
-    model,
-    system: SYETEM_INSTRUCTIONS,
-    prompt: `${reason}
+  const summaryPrompt = `${reason}
 
 ${priorSummary}
 
 New transcript segment to merge:
 
-${conversationText}`,
+${conversationText}`;
+  const text = await summarize({
+    instructions: SUMMARY_INSTRUCTIONS,
+    summaryPrompt,
+    messages,
   });
 
-  return text.trim();
+  return String(text).trim();
 }

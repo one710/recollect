@@ -10,22 +10,7 @@ import { MemoryLayer } from "../src/memory.js";
 import { InMemoryStorageAdapter } from "../src/storage.js";
 
 describe("MemoryLayer", () => {
-  const mockModel: any = {
-    specificationVersion: "v3",
-    modelId: "mock-model",
-    provider: "mock-provider",
-    doGenerate: jest.fn<any>().mockResolvedValue({
-      text: "Mocked summary",
-      content: [{ type: "text", text: "Mocked summary" }],
-      finishReason: "stop",
-      usage: {
-        inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-        outputTokens: { total: 5, text: 5, reasoning: 0 },
-      },
-      warnings: [],
-      rawCall: { rawPrompt: "...", rawSettings: {} },
-    }),
-  };
+  const mockSummarize = jest.fn(async () => "Mocked summary");
 
   let memory: MemoryLayer;
   const sessionId = "test-session-" + Date.now();
@@ -33,7 +18,7 @@ describe("MemoryLayer", () => {
   beforeAll(async () => {
     memory = new MemoryLayer({
       maxTokens: 50,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       threshold: 0.5,
       storage: new InMemoryStorageAdapter(),
       keepRecentUserTurns: 1,
@@ -96,7 +81,7 @@ describe("MemoryLayer", () => {
       .mockReturnValue(100);
     const customMemory = new MemoryLayer({
       maxTokens: 50,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       countTokens: mockCounter,
       storage: new InMemoryStorageAdapter(),
       minimumMessagesToCompact: 2,
@@ -116,7 +101,7 @@ describe("MemoryLayer", () => {
     const inMemorySession = "in-memory-" + Date.now();
     const inMemory = new MemoryLayer({
       maxTokens: 100,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       storage: new InMemoryStorageAdapter(),
     });
 
@@ -134,7 +119,7 @@ describe("MemoryLayer", () => {
     const session = "tool-input-string-passthrough-" + Date.now();
     const mem = new MemoryLayer({
       maxTokens: 1000,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       storage: new InMemoryStorageAdapter(),
     });
 
@@ -172,7 +157,7 @@ describe("MemoryLayer", () => {
     const session = "prompt-passthrough-" + Date.now();
     const mem = new MemoryLayer({
       maxTokens: 1000,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       storage: new InMemoryStorageAdapter(),
     });
 
@@ -224,7 +209,7 @@ describe("MemoryLayer", () => {
     const mem = new MemoryLayer({
       maxTokens: 60,
       threshold: 0.5,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       storage: new InMemoryStorageAdapter(),
       keepRecentUserTurns: 1,
       keepRecentMessagesMin: 2,
@@ -265,7 +250,7 @@ describe("MemoryLayer", () => {
     const mem = new MemoryLayer({
       maxTokens: 70,
       threshold: 0.5,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       storage: new InMemoryStorageAdapter(),
       keepRecentUserTurns: 1,
       keepRecentMessagesMin: 2,
@@ -309,7 +294,7 @@ describe("MemoryLayer", () => {
     const session = "append-no-implicit-dedupe-" + Date.now();
     const mem = new MemoryLayer({
       maxTokens: 1000,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       storage: new InMemoryStorageAdapter(),
     });
 
@@ -362,7 +347,7 @@ describe("MemoryLayer", () => {
     const session = "preserve-malformed-tool-content-" + Date.now();
     const mem = new MemoryLayer({
       maxTokens: 1000,
-      summarizationModel: mockModel,
+      summarize: mockSummarize,
       storage: new InMemoryStorageAdapter(),
     });
 

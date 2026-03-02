@@ -1,29 +1,14 @@
 import { describe, test, expect } from "@jest/globals";
 import { MemoryLayer } from "../src/memory.js";
 import { InMemoryStorageAdapter } from "../src/storage.js";
-import type { LanguageModelV3Message } from "@ai-sdk/provider";
+import type { RecollectMessage } from "../src/types.js";
 
-const mockModel: any = {
-  specificationVersion: "v3",
-  modelId: "mock-model",
-  provider: "mock-provider",
-  doGenerate: async () => ({
-    text: "Mocked summary",
-    content: [{ type: "text", text: "Mocked summary" }],
-    finishReason: "stop",
-    usage: {
-      inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-      outputTokens: { total: 5, text: 5, reasoning: 0 },
-    },
-    warnings: [],
-    rawCall: { rawPrompt: "...", rawSettings: {} },
-  }),
-};
+const mockSummarize = async () => "Mocked summary";
 
 describe("Tool Messages Passthrough", () => {
   const cases: Array<{
     name: string;
-    messages: LanguageModelV3Message[];
+    messages: RecollectMessage[];
   }> = [
     {
       name: "preserves orphan tool result",
@@ -68,7 +53,7 @@ describe("Tool Messages Passthrough", () => {
       const session = `tool-passthrough-${Date.now()}-${matrixCase.name.replace(/\s+/g, "-")}`;
       const memory = new MemoryLayer({
         maxTokens: 1000,
-        summarizationModel: mockModel,
+        summarize: mockSummarize,
         storage: new InMemoryStorageAdapter(),
       });
 

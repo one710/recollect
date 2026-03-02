@@ -1,6 +1,6 @@
 import { Tokenizer } from "ai-tokenizer";
 import * as o200k_base from "ai-tokenizer/encoding/o200k_base";
-import type { LanguageModelV3Message } from "@ai-sdk/provider";
+import type { RecollectMessage } from "./types.js";
 
 const defaultTokenizer = new Tokenizer(o200k_base);
 
@@ -15,7 +15,7 @@ export function countTokens(text: string): number {
  * Counts the tokens in a list of messages.
  */
 export function countMessagesTokens(
-  messages: LanguageModelV3Message[],
+  messages: RecollectMessage[],
   counter: (text: string) => number = countTokens,
 ): number {
   return messages.reduce((acc, m) => {
@@ -32,7 +32,7 @@ export function countMessagesTokens(
         if (!part || typeof part !== "object") {
           continue;
         }
-        if (part.type === "text") {
+        if (part.type === "text" && typeof part.text === "string") {
           messageTokens += counter(part.text);
         } else if (part.type === "file") {
           messageTokens += 85; // Rough estimate for file tokens

@@ -1,11 +1,11 @@
-import type { LanguageModelV3Message } from "@ai-sdk/provider";
+import type { RecollectMessage } from "../types.js";
 
 export interface SessionStats {
   compactionCount: number;
   lastCompactionTokensBefore: number | null;
   lastCompactionTokensAfter: number | null;
   lastCompactionReason: string | null;
-  canonicalContext: LanguageModelV3Message[] | null;
+  canonicalContext: RecollectMessage[] | null;
 }
 
 export interface SessionEvent {
@@ -18,14 +18,11 @@ export interface SessionEvent {
 
 export interface MemoryStorageAdapter {
   init(): Promise<void>;
-  appendMessage(
-    sessionId: string,
-    message: LanguageModelV3Message,
-  ): Promise<void>;
-  listMessages(sessionId: string): Promise<LanguageModelV3Message[]>;
+  appendMessage(sessionId: string, message: RecollectMessage): Promise<void>;
+  listMessages(sessionId: string): Promise<RecollectMessage[]>;
   replaceMessages(
     sessionId: string,
-    messages: LanguageModelV3Message[],
+    messages: RecollectMessage[],
   ): Promise<void>;
   clearSession(sessionId: string): Promise<void>;
   appendEvent(event: SessionEvent): Promise<void>;
