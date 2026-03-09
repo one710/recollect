@@ -54,7 +54,5 @@
       "optional": true
     }
   },
-  "dependencies": {
-    "ai-tokenizer": "^1.0.6"
-  }
+  "dependencies": {}
 }

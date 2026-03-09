@@ -1,11 +1,9 @@
-import type { RecollectMessage } from "../types.js";
-
 export interface SessionStats {
   compactionCount: number;
   lastCompactionTokensBefore: number | null;
   lastCompactionTokensAfter: number | null;
   lastCompactionReason: string | null;
-  canonicalContext: RecollectMessage[] | null;
+  canonicalContext: Record<string, any>[] | null;
 }
 
 export interface SessionEvent {
@@ -18,11 +16,11 @@ export interface SessionEvent {
 
 export interface MemoryStorageAdapter {
   init(): Promise<void>;
-  appendMessage(sessionId: string, message: RecollectMessage): Promise<void>;
-  listMessages(sessionId: string): Promise<RecollectMessage[]>;
+  appendMessage(sessionId: string, message: Record<string, any>): Promise<void>;
+  listMessages(sessionId: string): Promise<Record<string, any>[]>;
   replaceMessages(
     sessionId: string,
-    messages: RecollectMessage[],
+    messages: Record<string, any>[],
   ): Promise<void>;
   clearSession(sessionId: string): Promise<void>;
   appendEvent(event: SessionEvent): Promise<void>;

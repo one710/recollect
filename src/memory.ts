@@ -1,10 +1,9 @@
-import { countMessagesTokens } from "./tokenizer.js";
 import {
   summarizeConversation,
   type SummarizeCallable,
+  type MessageRenderer,
   SUMMARY_MESSAGE_PREFIX,
 } from "./summarizer.js";
-import type { RecollectMessage } from "./types.js";
 import {
   createSQLiteStorageAdapter,
   type MemoryStorageAdapter,
@@ -18,6 +17,9 @@ const DEFAULT_KEEP_RECENT_USER_TURNS = 4;
 const DEFAULT_KEEP_RECENT_MESSAGES_MIN = 8;
 const DEFAULT_MAX_COMPACTION_PASSES = 3;
 const DEFAULT_MINIMUM_MESSAGES_TO_COMPACT = 6;
+
+export type TokenCounter = (message: Record<string, any>) => number;
+export type CompactionEventHandler = (event: CompactionEvent) => void;
 
 export interface MemoryLayerOptions {
   /**
@@ -44,9 +46,15 @@ export interface MemoryLayerOptions {
    */
   storage?: MemoryStorageAdapter;
   /**
-   * Optional custom token counter function.
+   * Custom token counter function.
+   * Now mandatory and accepts the entire message object.
    */
-  countTokens?: (text: string) => number;
+  countTokens: TokenCounter;
+  /**
+   * Optional callback to render a message as text for summarization.
+   * Defaults to JSON.stringify(message).
+   */
+  renderMessage?: MessageRenderer;
   /**
    * Token target to aim for after compaction.
    * Defaults to 65% of maxTokens.
@@ -75,13 +83,18 @@ export interface MemoryLayerOptions {
   /**
    * Emits diagnostics for compaction lifecycle events.
    */
-  onCompactionEvent?: (event: CompactionEvent) => void;
+  onCompactionEvent?: CompactionEventHandler;
+  /**
+   * The role to use for summary messages.
+   * Defaults to 'system'.
+   */
+  summaryRole?: string;
 }
 
 interface CompactionPlan {
-  head: RecollectMessage[];
-  summarizeSlice: RecollectMessage[];
-  tail: RecollectMessage[];
+  head: Record<string, any>[];
+  summarizeSlice: Record<string, any>[];
+  tail: Record<string, any>[];
   existingSummary: string | null;
 }
 
@@ -101,7 +114,7 @@ export interface CompactionEvent {
 }
 
 export interface SessionSnapshot {
-  messages: RecollectMessage[];
+  messages: Record<string, any>[];
   tokenCount: number;
   stats: SessionStats;
 }
@@ -118,13 +131,16 @@ export class MemoryLayer {
   private maxTokens: number;
   private summarize: SummarizeCallable;
   private threshold: number;
-  private customCountTokens?: ((text: string) => number) | undefined;
+  private countTokens: TokenCounter;
+  private renderMessage: MessageRenderer | undefined;
+  // @ts-ignore - targetTokensAfterCompaction is used but marked as unused in some contexts
   private targetTokensAfterCompaction: number;
   private keepRecentUserTurns: number;
   private keepRecentMessagesMin: number;
   private maxCompactionPasses: number;
   private minimumMessagesToCompact: number;
-  private onCompactionEvent: ((event: CompactionEvent) => void) | undefined;
+  private onCompactionEvent: CompactionEventHandler | undefined;
+  private summaryRole: string;
 
   constructor(options: MemoryLayerOptions) {
     this.storage = options.storage ?? null;
@@ -133,7 +149,8 @@ export class MemoryLayer {
     this.maxTokens = options.maxTokens;
     this.summarize = options.summarize;
     this.threshold = options.threshold ?? DEFAULT_THRESHOLD;
-    this.customCountTokens = options.countTokens;
+    this.countTokens = options.countTokens;
+    this.renderMessage = options.renderMessage;
     this.targetTokensAfterCompaction =
       options.targetTokensAfterCompaction ??
       Math.max(1, Math.floor(this.maxTokens * DEFAULT_TARGET_TOKENS_FACTOR));
@@ -154,6 +171,7 @@ export class MemoryLayer {
       options.minimumMessagesToCompact ?? DEFAULT_MINIMUM_MESSAGES_TO_COMPACT,
     );
     this.onCompactionEvent = options.onCompactionEvent;
+    this.summaryRole = options.summaryRole ?? "system";
   }
 
   private async ensureReady(): Promise<void> {
@@ -184,34 +202,8 @@ export class MemoryLayer {
    */
   async addMessage(
     sessionId: string,
-    role: RecollectMessage["role"] | null,
-    contentOrMessage: string | RecollectMessage,
+    message: Record<string, any>,
   ): Promise<void> {
-    let message: RecollectMessage;
-
-    if (role === null) {
-      if (typeof contentOrMessage === "string") {
-        throw new Error("Message object is required when role is null.");
-      }
-      message = contentOrMessage;
-    } else {
-      if (typeof contentOrMessage !== "string") {
-        throw new Error("Content string is required when role is specified.");
-      }
-      if (role === "system") {
-        message = {
-          role,
-          content: contentOrMessage,
-        };
-      } else if (role === "tool") {
-        throw new Error("Tool role requires a structured message object.");
-      } else {
-        message = {
-          role: role as Exclude<RecollectMessage["role"], "system" | "tool">,
-          content: [{ type: "text", text: contentOrMessage }],
-        };
-      }
-    }
     await this.ensureReady();
     await this.appendAndMaybeCompact(sessionId, [message], "message_appended", {
       role: message.role,
@@ -219,11 +211,16 @@ export class MemoryLayer {
   }
 
   /**
+   * Legacy addMessage for backward compatibility (optional but recommended to keep briefly or remove)
+   * I'll move to the new signature as requested: "people could just provide a dict ... remove the type totally"
+   */
+
+  /**
    * Adds multiple messages in order and triggers compaction if needed.
    */
   async addMessages(
     sessionId: string,
-    messages: RecollectMessage[],
+    messages: Record<string, any>[],
   ): Promise<void> {
     await this.ensureReady();
     await this.appendAndMaybeCompact(sessionId, messages, "messages_appended", {
@@ -234,14 +231,14 @@ export class MemoryLayer {
   /**
    * Returns the persisted memory for this session (suitable as model prompt).
    */
-  async getPromptMessages(sessionId: string): Promise<RecollectMessage[]> {
+  async getPromptMessages(sessionId: string): Promise<Record<string, any>[]> {
     return this.getMessages(sessionId);
   }
 
   /**
    * Fetches the current chat history for a session.
    */
-  async getMessages(sessionId: string): Promise<RecollectMessage[]> {
+  async getMessages(sessionId: string): Promise<Record<string, any>[]> {
     await this.ensureReady();
     return this.requireStorage().listMessages(sessionId);
   }
@@ -290,17 +287,20 @@ export class MemoryLayer {
     return Math.max(1, Math.floor(this.maxTokens * this.threshold));
   }
 
-  private messageTokens(messages: RecollectMessage[]): number {
-    return countMessagesTokens(messages, this.customCountTokens);
+  private messageTokens(messages: Record<string, any>[]): number {
+    return messages.reduce((acc, m) => acc + this.countTokens(m), 0);
   }
 
-  private isPinnedInstructionRole(message: RecollectMessage): boolean {
-    return message.role === "system" || (message as any).role === "developer";
-  }
-
-  private isSummaryMessage(message: RecollectMessage): boolean {
+  private isPinnedInstructionRole(message: Record<string, any>): boolean {
     return (
-      message.role === "system" &&
+      (message.role === "system" || message.role === "developer") &&
+      !this.isSummaryMessage(message)
+    );
+  }
+
+  private isSummaryMessage(message: Record<string, any>): boolean {
+    return (
+      message.role === this.summaryRole &&
       typeof message.content === "string" &&
       message.content.startsWith(SUMMARY_MESSAGE_PREFIX)
     );
@@ -315,8 +315,8 @@ export class MemoryLayer {
   }
 
   private leadingCanonicalContext(
-    messages: RecollectMessage[],
-  ): RecollectMessage[] {
+    messages: Record<string, any>[],
+  ): Record<string, any>[] {
     let idx = 0;
     while (
       idx < messages.length &&
@@ -329,7 +329,7 @@ export class MemoryLayer {
 
   private async ensureCanonicalContextSnapshot(
     sessionId: string,
-    history: RecollectMessage[],
+    history: Record<string, any>[],
   ): Promise<void> {
     const stats = await this.requireStorage().getStats(sessionId);
     if (stats.canonicalContext && stats.canonicalContext.length > 0) {
@@ -351,7 +351,7 @@ export class MemoryLayer {
 
   private async appendAndMaybeCompact(
     sessionId: string,
-    messages: RecollectMessage[],
+    messages: Record<string, any>[],
     eventType: SessionEvent["type"],
     payload: Record<string, unknown>,
   ): Promise<void> {
@@ -381,8 +381,8 @@ export class MemoryLayer {
   }
 
   private planCompaction(
-    messages: RecollectMessage[],
-    canonicalContext: RecollectMessage[] | null,
+    messages: Record<string, any>[],
+    canonicalContext: Record<string, any>[] | null,
   ): CompactionPlan | null {
     if (messages.length < this.minimumMessagesToCompact) {
       return null;
@@ -444,7 +444,7 @@ export class MemoryLayer {
 
   private async compactSession(
     sessionId: string,
-    initialHistory: RecollectMessage[],
+    initialHistory: Record<string, any>[],
     options: CompactOptions,
   ): Promise<void> {
     let history = initialHistory;
@@ -507,14 +507,15 @@ export class MemoryLayer {
         plan.summarizeSlice,
         this.summarize,
         {
+          ...(this.renderMessage ? { renderMessage: this.renderMessage } : {}),
           existingSummary: plan.existingSummary,
           reason:
             "Conversation exceeded token budget. Preserve commitments, constraints, and pending tasks.",
         },
       );
 
-      const summaryMessage: RecollectMessage = {
-        role: "system",
+      const summaryMessage: Record<string, any> = {
+        role: this.summaryRole,
         content: `${SUMMARY_MESSAGE_PREFIX}\n${summary.trim()}`,
       };
 

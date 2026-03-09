@@ -858,11 +858,6 @@ aggregate-error@^3.0.0:
     clean-stack "^2.0.0"
     indent-string "^4.0.0"
 
-ai-tokenizer@^1.0.6:
-  version "1.0.6"
-  resolved "https://registry.npmjs.org/ai-tokenizer/-/ai-tokenizer-1.0.6.tgz"
-  integrity sha512-GaakQFxen0pRH/HIA4v68ZM40llCH27HUYUSBLK+gVuZ57e53pYJe1xFvSTj4sJJjbWU92m1X6NjPWyeWkFDow==
-
 ansi-escapes@^4.3.2:
   version "4.3.2"
   resolved "https://registry.npmjs.org/ansi-escapes/-/ansi-escapes-4.3.2.tgz"

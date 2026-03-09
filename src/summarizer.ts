@@ -1,5 +1,3 @@
-import type { RecollectMessage } from "./types.js";
-
 export const SUMMARY_MESSAGE_PREFIX = "Conversation checkpoint summary";
 
 export const SUMMARY_INSTRUCTIONS = `
@@ -9,69 +7,30 @@ Use concise bullet points grouped by: Goals, Decisions, Constraints, Pending Wor
 Never invent details, only summarize the conversation.
 `;
 
+export type MessageRenderer = (message: Record<string, any>) => string;
+
 export interface SummarizeConversationOptions {
   existingSummary?: string | null;
   reason?: string;
   maxInputCharacters?: number;
+  renderMessage?: MessageRenderer;
 }
 
 export interface SummaryRequest {
   instructions: string;
   summaryPrompt: string;
-  messages: RecollectMessage[];
+  messages: Record<string, any>[];
 }
 
 export type SummarizeCallable = (
   request: SummaryRequest,
 ) => Promise<string> | string;
 
-function renderMessage(message: RecollectMessage): string {
-  let content = "";
-
-  if (typeof message.content === "string") {
-    content = message.content;
-  } else if (Array.isArray(message.content)) {
-    content = message.content
-      .map((part) => {
-        if (part.type === "text" && typeof part.text === "string") {
-          return part.text;
-        }
-        if (part.type === "file")
-          return `[File: ${part.filename || "unnamed"}]`;
-        if (part.type === "tool-result") {
-          const resultValue = (part as any).result ?? (part as any).output;
-          return `[Tool Result ${part.toolName}: ${JSON.stringify(resultValue)}]`;
-        }
-        return "";
-      })
-      .filter(
-        (line): line is string => typeof line === "string" && line.length > 0,
-      )
-      .join(" ");
-  }
-
-  let toolCalls = "";
-  if (message.role === "assistant" && (message as any).toolCalls) {
-    toolCalls = (message as any).toolCalls
-      .map(
-        (toolCall: any) =>
-          `[Tool Call ${toolCall.toolName}(${JSON.stringify(toolCall.args)})]`,
-      )
-      .join(" ");
-  }
-
-  const role = String(message.role).toUpperCase();
-  if (toolCalls.length > 0) {
-    return `${role}: ${content} ${toolCalls}`.trim();
-  }
-  return `${role}: ${content}`.trim();
-}
-
 /**
  * Summarizes a conversation history using a provided language model.
  */
 export async function summarizeConversation(
-  messages: RecollectMessage[],
+  messages: Record<string, any>[],
   summarize: SummarizeCallable,
   options: SummarizeConversationOptions = {},
 ): Promise<string> {
@@ -79,7 +38,9 @@ export async function summarizeConversation(
     2000,
     options.maxInputCharacters ?? 120_000,
   );
-  const rendered = messages.map(renderMessage).join("\n\n");
+  const renderer =
+    options.renderMessage ?? ((m: Record<string, any>) => JSON.stringify(m));
+  const rendered = messages.map(renderer).join("\n\n");
   const conversationText = rendered.slice(-maxInputCharacters);
   const reason = options.reason
     ? `Reason for compaction: ${options.reason}`

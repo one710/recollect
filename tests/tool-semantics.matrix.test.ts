@@ -1,14 +1,13 @@
 import { describe, test, expect } from "@jest/globals";
 import { MemoryLayer } from "../src/memory.js";
 import { InMemoryStorageAdapter } from "../src/storage.js";
-import type { RecollectMessage } from "../src/types.js";
 
 const mockSummarize = async () => "Mocked summary";
 
 describe("Tool Messages Passthrough", () => {
   const cases: Array<{
     name: string;
-    messages: RecollectMessage[];
+    messages: Record<string, any>[];
   }> = [
     {
       name: "preserves orphan tool result",
@@ -55,6 +54,7 @@ describe("Tool Messages Passthrough", () => {
         maxTokens: 1000,
         summarize: mockSummarize,
         storage: new InMemoryStorageAdapter(),
+        countTokens: (m) => JSON.stringify(m).length,
       });
 
       await memory.addMessages(session, matrixCase.messages);

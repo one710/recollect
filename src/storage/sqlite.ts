@@ -1,5 +1,4 @@
 import sqlite3 from "sqlite3";
-import type { RecollectMessage } from "../types.js";
 import type {
   MemoryStorageAdapter,
   SessionEvent,
@@ -18,7 +17,6 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
       CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sessionId TEXT NOT NULL,
-        role TEXT NOT NULL,
         data TEXT NOT NULL,
         createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
       );
@@ -75,15 +73,15 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
 
   async appendMessage(
     sessionId: string,
-    message: RecollectMessage,
+    message: Record<string, any>,
   ): Promise<void> {
-    await this.run(
-      "INSERT INTO messages (sessionId, role, data) VALUES (?, ?, ?)",
-      [sessionId, message.role, JSON.stringify(message)],
-    );
+    await this.run("INSERT INTO messages (sessionId, data) VALUES (?, ?)", [
+      sessionId,
+      JSON.stringify(message),
+    ]);
   }
 
-  async listMessages(sessionId: string): Promise<RecollectMessage[]> {
+  async listMessages(sessionId: string): Promise<Record<string, any>[]> {
     const rows = await this.all<{
       id: number;
       data: string;
@@ -93,7 +91,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
 
     return rows.map((row) => {
       try {
-        return JSON.parse(row.data) as RecollectMessage;
+        return JSON.parse(row.data) as Record<string, any>;
       } catch (error) {
         throw new Error(
           `Invalid message JSON in session '${sessionId}' row ${row.id}: ${(error as Error).message}`,
@@ -104,7 +102,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
 
   async replaceMessages(
     sessionId: string,
-    messages: RecollectMessage[],
+    messages: Record<string, any>[],
   ): Promise<void> {
     await this.exec("BEGIN TRANSACTION");
     try {
@@ -178,7 +176,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
       lastCompactionTokensAfter: row.lastCompactionTokensAfter ?? null,
       lastCompactionReason: row.lastCompactionReason ?? null,
       canonicalContext: row.canonicalContext
-        ? (JSON.parse(row.canonicalContext) as RecollectMessage[])
+        ? (JSON.parse(row.canonicalContext) as Record<string, any>[])
         : null,
     };
   }
