@@ -1,11 +1,12 @@
 import type {
+  MessageRecord,
   MemoryStorageAdapter,
   SessionEvent,
   SessionStats,
 } from "./types.js";
 
 export class InMemoryStorageAdapter implements MemoryStorageAdapter {
-  private sessions = new Map<string, Record<string, any>[]>();
+  private sessions = new Map<string, MessageRecord[]>();
   private stats = new Map<string, SessionStats>();
   private events = new Map<string, SessionEvent[]>();
   private nextEventId = 1;
@@ -16,22 +17,31 @@ export class InMemoryStorageAdapter implements MemoryStorageAdapter {
 
   async appendMessage(
     sessionId: string,
+    runId: string | null,
     message: Record<string, any>,
   ): Promise<void> {
     const current = this.sessions.get(sessionId) ?? [];
-    current.push(message);
+    current.push({ data: { ...message }, runId });
     this.sessions.set(sessionId, current);
   }
 
-  async listMessages(sessionId: string): Promise<Record<string, any>[]> {
-    return [...(this.sessions.get(sessionId) ?? [])];
+  async listMessages(sessionId: string): Promise<MessageRecord[]> {
+    const stored = this.sessions.get(sessionId) ?? [];
+    return stored.map(({ data, runId }) => ({
+      data: { ...data },
+      runId,
+    }));
   }
 
   async replaceMessages(
     sessionId: string,
-    messages: Record<string, any>[],
+    records: MessageRecord[],
   ): Promise<void> {
-    this.sessions.set(sessionId, [...messages]);
+    const stored: MessageRecord[] = records.map((record) => ({
+      runId: record.runId ?? null,
+      data: { ...record.data },
+    }));
+    this.sessions.set(sessionId, stored);
   }
 
   async clearSession(sessionId: string): Promise<void> {
@@ -41,8 +51,8 @@ export class InMemoryStorageAdapter implements MemoryStorageAdapter {
   async appendEvent(event: SessionEvent): Promise<void> {
     const sessionEvents = this.events.get(event.sessionId) ?? [];
     sessionEvents.push({
-      ...event,
       id: this.nextEventId++,
+      ...event,
       createdAt: new Date().toISOString(),
     });
     this.events.set(event.sessionId, sessionEvents);

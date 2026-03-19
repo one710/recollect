@@ -6,6 +6,7 @@ import {
 } from "./summarizer.js";
 import {
   createSQLiteStorageAdapter,
+  type MessageRecord,
   type MemoryStorageAdapter,
   type SessionEvent,
   type SessionStats,
@@ -92,9 +93,9 @@ export interface MemoryLayerOptions {
 }
 
 interface CompactionPlan {
-  head: Record<string, any>[];
-  summarizeSlice: Record<string, any>[];
-  tail: Record<string, any>[];
+  head: MessageRecord[];
+  summarizeSlice: MessageRecord[];
+  tail: MessageRecord[];
   existingSummary: string | null;
 }
 
@@ -123,6 +124,10 @@ interface CompactOptions {
   mode: CompactionMode;
   reason: string;
   force: boolean;
+  /** When set, messages with this runId are never summarized (current run stays as tail). */
+  currentRunId?: string | null;
+  /** Public API: same as currentRunId (pass runId in options; we set currentRunId for compactSession). */
+  runId?: string | null;
 }
 
 export class MemoryLayer {
@@ -199,15 +204,23 @@ export class MemoryLayer {
 
   /**
    * Adds a message to the chat history and triggers auto-summarization if the threshold is reached.
+   * @param runId Optional. When provided, the message is tagged with this run; compaction will never summarize the current run's messages.
    */
   async addMessage(
     sessionId: string,
+    runId: string | null,
     message: Record<string, any>,
   ): Promise<void> {
     await this.ensureReady();
-    await this.appendAndMaybeCompact(sessionId, [message], "message_appended", {
-      role: message.role,
-    });
+    await this.appendAndMaybeCompact(
+      sessionId,
+      runId,
+      [message],
+      "message_appended",
+      {
+        role: message.role,
+      },
+    );
   }
 
   /**
@@ -217,40 +230,58 @@ export class MemoryLayer {
 
   /**
    * Adds multiple messages in order and triggers compaction if needed.
+   * @param runId Optional. When provided, all messages are tagged with this run; compaction will never summarize this run's messages (avoids splitting tool_use/tool_result pairs).
    */
   async addMessages(
     sessionId: string,
+    runId: string | null,
     messages: Record<string, any>[],
   ): Promise<void> {
     await this.ensureReady();
-    await this.appendAndMaybeCompact(sessionId, messages, "messages_appended", {
-      count: messages.length,
-    });
+    await this.appendAndMaybeCompact(
+      sessionId,
+      runId,
+      messages,
+      "messages_appended",
+      {
+        count: messages.length,
+      },
+    );
   }
 
   /**
    * Returns the persisted memory for this session (suitable as model prompt).
    */
   async getPromptMessages(sessionId: string): Promise<Record<string, any>[]> {
-    return this.getMessages(sessionId);
+    return this.getMessages(sessionId, null);
   }
 
   /**
    * Fetches the current chat history for a session.
+   * @param runId Optional. Reserved for future use (e.g. filtering by run); currently unused.
    */
-  async getMessages(sessionId: string): Promise<Record<string, any>[]> {
+  async getMessages(
+    sessionId: string,
+    _runIdParam: string | null = null,
+  ): Promise<Record<string, any>[]> {
     await this.ensureReady();
-    return this.requireStorage().listMessages(sessionId);
+    const records = await this.requireStorage().listMessages(sessionId);
+    return this.recordsToMessages(records);
   }
 
   /**
    * Forces one compaction cycle for a session.
+   * @param runId Optional. When provided, messages tagged with this run are kept as tail (not summarized).
    */
-  async compactNow(sessionId: string): Promise<void> {
+  async compactNow(
+    sessionId: string,
+    runId: string | null = null,
+  ): Promise<void> {
     await this.compactIfNeeded(sessionId, {
       mode: "manual",
       reason: "manual_compact_now",
       force: true,
+      ...(runId != null ? { runId } : {}),
     });
   }
 
@@ -264,6 +295,9 @@ export class MemoryLayer {
       mode: options.mode ?? "manual",
       reason: options.reason ?? "compaction_requested",
       force: options.force ?? false,
+      ...(options.runId != null || options.currentRunId != null
+        ? { currentRunId: options.runId ?? options.currentRunId ?? null }
+        : {}),
     });
   }
 
@@ -277,7 +311,8 @@ export class MemoryLayer {
 
   async getSessionSnapshot(sessionId: string): Promise<SessionSnapshot> {
     await this.ensureReady();
-    const messages = await this.requireStorage().listMessages(sessionId);
+    const records = await this.requireStorage().listMessages(sessionId);
+    const messages = this.recordsToMessages(records);
     const tokenCount = this.messageTokens(messages);
     const stats = await this.requireStorage().getStats(sessionId);
     return { messages, tokenCount, stats };
@@ -327,6 +362,10 @@ export class MemoryLayer {
     return messages.slice(0, idx);
   }
 
+  private recordsToMessages(records: MessageRecord[]): Record<string, any>[] {
+    return records.map((record) => record.data);
+  }
+
   private async ensureCanonicalContextSnapshot(
     sessionId: string,
     history: Record<string, any>[],
@@ -351,12 +390,13 @@ export class MemoryLayer {
 
   private async appendAndMaybeCompact(
     sessionId: string,
+    runId: string | null,
     messages: Record<string, any>[],
     eventType: SessionEvent["type"],
     payload: Record<string, unknown>,
   ): Promise<void> {
     for (const message of messages) {
-      await this.requireStorage().appendMessage(sessionId, message);
+      await this.requireStorage().appendMessage(sessionId, runId, message);
     }
     await this.appendEvent({
       sessionId,
@@ -365,8 +405,9 @@ export class MemoryLayer {
     });
 
     const history = await this.requireStorage().listMessages(sessionId);
-    await this.ensureCanonicalContextSnapshot(sessionId, history);
-    const tokenCount = this.messageTokens(history);
+    const historyMessages = this.recordsToMessages(history);
+    await this.ensureCanonicalContextSnapshot(sessionId, historyMessages);
+    const tokenCount = this.messageTokens(historyMessages);
     if (tokenCount < this.compactionTriggerTokens()) {
       return;
     }
@@ -377,16 +418,19 @@ export class MemoryLayer {
           ? "threshold_reached_after_add_message"
           : "threshold_reached_after_add_messages",
       force: false,
+      ...(runId != null ? { currentRunId: runId } : {}),
     });
   }
 
   private planCompaction(
-    messages: Record<string, any>[],
+    records: MessageRecord[],
     canonicalContext: Record<string, any>[] | null,
+    currentRunId?: string | null,
   ): CompactionPlan | null {
-    if (messages.length < this.minimumMessagesToCompact) {
+    if (records.length < this.minimumMessagesToCompact) {
       return null;
     }
+    const messages = this.recordsToMessages(records);
 
     // Preserve initial instruction messages verbatim.
     const fallbackHead = this.leadingCanonicalContext(messages);
@@ -403,39 +447,62 @@ export class MemoryLayer {
       pinnedHeadEnd += 1;
     }
 
-    const userBoundaries: number[] = [];
-    for (let i = pinnedHeadEnd; i < messages.length; i += 1) {
-      if (messages[i]?.role === "user") {
-        userBoundaries.push(i);
-      }
-    }
+    let tailStart: number;
 
-    let tailStart = messages.length;
-    if (userBoundaries.length > this.keepRecentUserTurns) {
-      tailStart =
-        userBoundaries[userBoundaries.length - this.keepRecentUserTurns]!;
-    } else {
-      tailStart = Math.max(
-        pinnedHeadEnd + 1,
-        messages.length - this.keepRecentMessagesMin,
+    if (currentRunId != null) {
+      // Run-scoped compaction: keep all messages of the current run as tail (never summarize).
+      const firstCurrentRunIndex = records.findIndex(
+        (record) => record.runId === currentRunId,
       );
+      if (firstCurrentRunIndex >= pinnedHeadEnd) {
+        tailStart = firstCurrentRunIndex;
+      } else {
+        // No message with this runId (e.g. legacy session); fall back to default tail.
+        tailStart = this.computeDefaultTailStart(messages, pinnedHeadEnd);
+      }
+    } else {
+      tailStart = this.computeDefaultTailStart(messages, pinnedHeadEnd);
     }
 
     if (tailStart <= pinnedHeadEnd) {
       return null;
     }
 
-    const summarizeSlice = messages.slice(pinnedHeadEnd, tailStart);
-    const tail = messages.slice(tailStart);
+    const summarizeSlice = records.slice(pinnedHeadEnd, tailStart);
+    const tail = records.slice(tailStart);
 
     const summaries = summarizeSlice
+      .map((record) => record.data)
       .filter((message) => this.isSummaryMessage(message))
       .map((message) => this.extractSummaryBody(message.content as string))
       .filter((text) => text.length > 0);
 
     const existingSummary =
       summaries.length > 0 ? summaries.join("\n\n") : null;
-    return { head, summarizeSlice, tail, existingSummary };
+    const headRecords: MessageRecord[] = head.map((message) => ({
+      data: message,
+      runId: null,
+    }));
+    return { head: headRecords, summarizeSlice, tail, existingSummary };
+  }
+
+  private computeDefaultTailStart(
+    messages: Record<string, any>[],
+    pinnedHeadEnd: number,
+  ): number {
+    const userBoundaries: number[] = [];
+    for (let i = pinnedHeadEnd; i < messages.length; i += 1) {
+      if (messages[i]?.role === "user") {
+        userBoundaries.push(i);
+      }
+    }
+    if (userBoundaries.length > this.keepRecentUserTurns) {
+      return userBoundaries[userBoundaries.length - this.keepRecentUserTurns]!;
+    }
+    return Math.max(
+      pinnedHeadEnd + 1,
+      messages.length - this.keepRecentMessagesMin,
+    );
   }
 
   private async appendEvent(event: SessionEvent): Promise<void> {
@@ -444,16 +511,17 @@ export class MemoryLayer {
 
   private async compactSession(
     sessionId: string,
-    initialHistory: Record<string, any>[],
+    initialHistory: MessageRecord[],
     options: CompactOptions,
   ): Promise<void> {
     let history = initialHistory;
+    let historyMessages = this.recordsToMessages(history);
 
-    await this.ensureCanonicalContextSnapshot(sessionId, history);
+    await this.ensureCanonicalContextSnapshot(sessionId, historyMessages);
     const stats = await this.requireStorage().getStats(sessionId);
 
     const triggerTokens = this.compactionTriggerTokens();
-    const initialTokens = this.messageTokens(history);
+    const initialTokens = this.messageTokens(historyMessages);
     if (!options.force && initialTokens < triggerTokens) {
       await this.appendEvent({
         sessionId,
@@ -483,12 +551,16 @@ export class MemoryLayer {
     let passes = 0;
 
     while (passes < this.maxCompactionPasses) {
-      const beforeTokens = this.messageTokens(history);
+      const beforeTokens = this.messageTokens(historyMessages);
       if (!options.force && beforeTokens < triggerTokens) {
         return;
       }
 
-      const plan = this.planCompaction(history, stats.canonicalContext);
+      const plan = this.planCompaction(
+        history,
+        stats.canonicalContext,
+        options.currentRunId,
+      );
       if (!plan || plan.summarizeSlice.length === 0) {
         await this.appendEvent({
           sessionId,
@@ -504,7 +576,7 @@ export class MemoryLayer {
       }
 
       const summary = await summarizeConversation(
-        plan.summarizeSlice,
+        this.recordsToMessages(plan.summarizeSlice),
         this.summarize,
         {
           ...(this.renderMessage ? { renderMessage: this.renderMessage } : {}),
@@ -519,8 +591,13 @@ export class MemoryLayer {
         content: `${SUMMARY_MESSAGE_PREFIX}\n${summary.trim()}`,
       };
 
-      const nextHistory = [...plan.head, summaryMessage, ...plan.tail];
-      const afterTokens = this.messageTokens(nextHistory);
+      const nextHistory: MessageRecord[] = [
+        ...plan.head,
+        { data: summaryMessage, runId: null },
+        ...plan.tail,
+      ];
+      const nextHistoryMessages = this.recordsToMessages(nextHistory);
+      const afterTokens = this.messageTokens(nextHistoryMessages);
 
       // Abort if compaction does not reduce prompt size.
       if (afterTokens >= beforeTokens) {
@@ -541,6 +618,7 @@ export class MemoryLayer {
 
       await this.requireStorage().replaceMessages(sessionId, nextHistory);
       history = nextHistory;
+      historyMessages = nextHistoryMessages;
       passes += 1;
       await this.requireStorage().updateStats(sessionId, {
         compactionCount: stats.compactionCount + passes,

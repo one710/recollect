@@ -1,5 +1,6 @@
 import sqlite3 from "sqlite3";
 import type {
+  MessageRecord,
   MemoryStorageAdapter,
   SessionEvent,
   SessionStats,
@@ -17,6 +18,7 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
       CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sessionId TEXT NOT NULL,
+        runId TEXT,
         data TEXT NOT NULL,
         createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
       );
@@ -73,25 +75,29 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
 
   async appendMessage(
     sessionId: string,
+    runId: string | null,
     message: Record<string, any>,
   ): Promise<void> {
-    await this.run("INSERT INTO messages (sessionId, data) VALUES (?, ?)", [
-      sessionId,
-      JSON.stringify(message),
-    ]);
+    await this.run(
+      "INSERT INTO messages (sessionId, runId, data) VALUES (?, ?, ?)",
+      [sessionId, runId ?? null, JSON.stringify(message)],
+    );
   }
 
-  async listMessages(sessionId: string): Promise<Record<string, any>[]> {
+  async listMessages(sessionId: string): Promise<MessageRecord[]> {
     const rows = await this.all<{
       id: number;
+      runId: string | null;
       data: string;
-    }>("SELECT id, data FROM messages WHERE sessionId = ? ORDER BY id ASC", [
-      sessionId,
-    ]);
+    }>(
+      "SELECT id, runId, data FROM messages WHERE sessionId = ? ORDER BY id ASC",
+      [sessionId],
+    );
 
-    return rows.map((row) => {
+    return rows.map((row): MessageRecord => {
       try {
-        return JSON.parse(row.data) as Record<string, any>;
+        const data = JSON.parse(row.data) as Record<string, any>;
+        return { runId: row.runId ?? null, data };
       } catch (error) {
         throw new Error(
           `Invalid message JSON in session '${sessionId}' row ${row.id}: ${(error as Error).message}`,
@@ -102,13 +108,13 @@ export class SQLiteStorageAdapter implements MemoryStorageAdapter {
 
   async replaceMessages(
     sessionId: string,
-    messages: Record<string, any>[],
+    records: MessageRecord[],
   ): Promise<void> {
     await this.exec("BEGIN TRANSACTION");
     try {
       await this.clearSession(sessionId);
-      for (const message of messages) {
-        await this.appendMessage(sessionId, message);
+      for (const record of records) {
+        await this.appendMessage(sessionId, record.runId ?? null, record.data);
       }
       await this.exec("COMMIT");
     } catch (error) {

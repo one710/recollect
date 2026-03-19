@@ -1,4 +1,5 @@
 export type {
+  MessageRecord,
   MemoryStorageAdapter,
   SessionEvent,
   SessionStats,

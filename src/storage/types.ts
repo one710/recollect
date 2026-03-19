@@ -14,14 +14,20 @@ export interface SessionEvent {
   createdAt?: string;
 }
 
+export interface MessageRecord {
+  runId: string | null;
+  data: Record<string, any>;
+}
+
 export interface MemoryStorageAdapter {
   init(): Promise<void>;
-  appendMessage(sessionId: string, message: Record<string, any>): Promise<void>;
-  listMessages(sessionId: string): Promise<Record<string, any>[]>;
-  replaceMessages(
+  appendMessage(
     sessionId: string,
-    messages: Record<string, any>[],
+    runId: string | null,
+    message: Record<string, any>,
   ): Promise<void>;
+  listMessages(sessionId: string): Promise<MessageRecord[]>;
+  replaceMessages(sessionId: string, records: MessageRecord[]): Promise<void>;
   clearSession(sessionId: string): Promise<void>;
   appendEvent(event: SessionEvent): Promise<void>;
   listEvents(sessionId: string, limit?: number): Promise<SessionEvent[]>;

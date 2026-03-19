@@ -74,7 +74,10 @@ describe.each(ADAPTERS)(
     });
 
     test("should add messages and retrieve history", async () => {
-      await memory.addMessage(sessionId, { role: "user", content: "Hello" });
+      await memory.addMessage(sessionId, null, {
+        role: "user",
+        content: "Hello",
+      });
       const history = await memory.getMessages(sessionId);
       expect(history.length).toBe(1);
       expect(history[0]?.role).toBe("user");
@@ -82,11 +85,11 @@ describe.each(ADAPTERS)(
     });
 
     test("should trigger compaction and preserve recent context", async () => {
-      await memory.addMessage(sessionId, {
+      await memory.addMessage(sessionId, null, {
         role: "assistant",
         content: "A very long message".repeat(20),
       });
-      await memory.addMessage(sessionId, {
+      await memory.addMessage(sessionId, null, {
         role: "user",
         content: "Force compaction now please!".repeat(50),
       });
@@ -110,7 +113,7 @@ describe.each(ADAPTERS)(
     });
 
     test("clearSession should remove all messages for a session", async () => {
-      await memory.addMessage(sessionId, {
+      await memory.addMessage(sessionId, null, {
         role: "user",
         content: "forget me",
       });
@@ -135,7 +138,7 @@ describe.each(ADAPTERS)(
       });
 
       const msg = { role: "user", content: "Hello" };
-      await customMemory.addMessage(customSessionId, msg);
+      await customMemory.addMessage(customSessionId, null, msg);
       const history = await customMemory.getMessages(customSessionId);
       expect(history.length).toBeGreaterThanOrEqual(1);
       expect(mockCounter).toHaveBeenCalled();
@@ -143,7 +146,7 @@ describe.each(ADAPTERS)(
 
     test("should preserve tool input strings as-is", async () => {
       const session = "tool-input-string";
-      await memory.addMessages(session, [
+      await memory.addMessages(session, null, [
         { role: "user", content: "Run structured tool call" },
         {
           role: "assistant",
@@ -171,7 +174,7 @@ describe.each(ADAPTERS)(
 
     test("getPromptMessages should return stored messages unchanged", async () => {
       const session = "prompt-passthrough";
-      await memory.addMessages(session, [
+      await memory.addMessages(session, null, [
         { role: "user", content: "Run one tool." },
         {
           role: "tool",
@@ -209,7 +212,7 @@ describe.each(ADAPTERS)(
         minimumMessagesToCompact: 2,
       });
 
-      await mem.addMessages(session, [
+      await mem.addMessages(session, null, [
         { role: "system", content: "System guardrail A" },
         { role: "developer", content: "Developer instruction B" },
         { role: "user", content: "long user turn".repeat(20) },
@@ -238,7 +241,7 @@ describe.each(ADAPTERS)(
         minimumMessagesToCompact: 2,
       });
 
-      await mem.addMessages(eventSession, [
+      await mem.addMessages(eventSession, null, [
         { role: "system", content: "Guardrail" },
         { role: "user", content: "Instruction A".repeat(10) },
         { role: "assistant", content: "Response A".repeat(10) },
@@ -273,7 +276,7 @@ describe.each(ADAPTERS)(
         ],
       };
 
-      await memory.addMessages(session, [
+      await memory.addMessages(session, null, [
         { role: "user", content: "Run dedupe tool" },
         canonicalAssistant,
       ]);
@@ -294,7 +297,7 @@ describe.each(ADAPTERS)(
         },
       ];
 
-      await memory.addMessages(session, incomingPrompt);
+      await memory.addMessages(session, null, incomingPrompt);
       const all = await memory.getMessages(session);
 
       const userCount = all.filter((m) => m.role === "user").length;
@@ -305,7 +308,7 @@ describe.each(ADAPTERS)(
 
     test("should preserve malformed tool-role content parts as-is", async () => {
       const session = "malformed-tool";
-      await memory.addMessages(session, [
+      await memory.addMessages(session, null, [
         { role: "user", content: "Run tool once" },
         {
           role: "assistant",
@@ -359,8 +362,14 @@ describe.each(ADAPTERS)(
         minimumMessagesToCompact: 2,
       });
 
-      await mem.addMessage(session, { role: "system", content: "start" });
-      await mem.addMessage(session, { foo: "This is heavy", role: "user" });
+      await mem.addMessage(session, null, {
+        role: "system",
+        content: "start",
+      });
+      await mem.addMessage(session, null, {
+        foo: "This is heavy",
+        role: "user",
+      });
 
       const history = await mem.getMessages(session);
       expect(
@@ -392,8 +401,8 @@ describe.each(ADAPTERS)(
         minimumMessagesToCompact: 2,
       });
 
-      await mem.addMessage(session, { role: "system", text: "start" });
-      await mem.addMessage(session, { text: "Heavy", role: "user" });
+      await mem.addMessage(session, null, { role: "system", text: "start" });
+      await mem.addMessage(session, null, { text: "Heavy", role: "user" });
 
       const history = await mem.getMessages(session);
       expect(
@@ -420,11 +429,11 @@ describe.each(ADAPTERS)(
         keepRecentUserTurns: 0,
       });
 
-      await mem.addMessage(session, {
+      await mem.addMessage(session, null, {
         role: "user",
         content: "trigger summary PART 1".repeat(10),
       });
-      await mem.addMessage(session, {
+      await mem.addMessage(session, null, {
         role: "user",
         content: "trigger summary PART 2".repeat(10),
       });

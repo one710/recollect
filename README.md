@@ -47,9 +47,10 @@ const memory = new MemoryLayer({
 });
 
 const sessionId = "agent:researcher-1";
+const runId = "run-2026-03-19-evt-123"; // one id per agent run/event
 
 // Add arbitrary message shapes
-await memory.addMessage(sessionId, {
+await memory.addMessage(sessionId, runId, {
   role: "user",
   content: "Analyze the latest trends in autonomous agents.",
 });
@@ -65,16 +66,73 @@ Because Recollect treats messages as generic objects, you can use it with any pr
 ### OpenAI / Anthropic
 
 ```typescript
-await memory.addMessage(id, { role: "assistant", content: "Understood." });
+await memory.addMessage(id, null, {
+  role: "assistant",
+  content: "Understood.",
+});
 ```
 
 ### Multimodal / Complex Content
 
 ```typescript
-await memory.addMessage(id, {
+await memory.addMessage(id, null, {
   role: "user",
   content: [{ type: "image_url", image_url: { url: "..." } }],
 });
+```
+
+## 🧵 Run-Aware Compaction (runId)
+
+Recollect supports run-scoped compaction using a dedicated `runId` field in storage.
+
+- Use a unique `runId` per agent run/event.
+- Pass the same `runId` to `addMessage`/`addMessages` for all messages generated in that run.
+- When compaction triggers for that run, Recollect keeps that run as the tail and compacts older history first.
+- This helps avoid splitting in-progress tool chains (e.g. tool call/result pairs) during compaction.
+
+### Example
+
+```typescript
+const sessionId = "slack:C123:thread-abc";
+const runId = crypto.randomUUID();
+
+await memory.addMessages(sessionId, runId, [
+  {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "check this" }],
+  },
+  { type: "function_call", callId: "call_1", name: "my_tool", arguments: "{}" },
+  {
+    type: "function_call_result",
+    callId: "call_1",
+    name: "my_tool",
+    output: "ok",
+  },
+]);
+```
+
+If you don't need run scoping for a call, pass `null` for `runId`.
+
+## 🗄️ Storage Model (Updated)
+
+SQLite `messages` now stores:
+
+- `sessionId`
+- `runId` (nullable, dedicated column)
+- `data` (JSON payload)
+
+The public prompt/history methods (`getMessages`, `getPromptMessages`) return message payloads only; run metadata stays in storage internals.
+
+## 🔧 Core API Signatures
+
+```typescript
+addMessage(sessionId: string, runId: string | null, message: Record<string, any>): Promise<void>
+addMessages(sessionId: string, runId: string | null, messages: Record<string, any>[]): Promise<void>
+getMessages(sessionId: string, runId?: string | null): Promise<Record<string, any>[]>
+getPromptMessages(sessionId: string): Promise<Record<string, any>[]>
+compactNow(sessionId: string, runId?: string | null): Promise<void>
+compactIfNeeded(sessionId: string, options?: { mode?: "manual" | "auto-pre" | "auto-post" | "ingest"; reason?: string; runId?: string | null; force?: boolean }): Promise<void>
 ```
 
 ## ⚙️ Advanced Configuration
