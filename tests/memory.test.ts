@@ -10,6 +10,7 @@ import { MemoryLayer } from "../src/memory.js";
 import {
   FilesystemStorageAdapter,
   InMemoryStorageAdapter,
+  createPostgresStorageAdapter,
   createSQLiteStorageAdapter,
 } from "../src/storage.js";
 import fs from "node:fs";
@@ -35,6 +36,23 @@ const ADAPTERS = [
       return { adapter, dbPath: root };
     },
   },
+  ...(process.env.RECOLLECT_TEST_PG_URL
+    ? [
+        {
+          name: "Postgres",
+          factory: async () => {
+            const url = process.env.RECOLLECT_TEST_PG_URL!;
+            const adapter = await createPostgresStorageAdapter(url);
+            await adapter.init();
+            return {
+              adapter,
+              dbPath: undefined,
+              pgTruncate: () => adapter.truncateAllForTesting(),
+            };
+          },
+        },
+      ]
+    : []),
 ];
 
 describe.each(ADAPTERS)(
@@ -47,12 +65,17 @@ describe.each(ADAPTERS)(
     let memory: MemoryLayer;
     let adapter: any;
     let dbPath: string | undefined;
+    let pgTruncate: (() => Promise<void>) | undefined;
     const sessionId = "test-session";
     beforeEach(async () => {
+      pgTruncate = undefined;
       const created = await factory();
       if ("adapter" in created) {
         adapter = created.adapter;
         dbPath = created.dbPath;
+        if ("pgTruncate" in created && created.pgTruncate) {
+          pgTruncate = created.pgTruncate;
+        }
       } else {
         adapter = created;
         dbPath = undefined;
@@ -71,6 +94,9 @@ describe.each(ADAPTERS)(
     }, 10000); // 10s for sqlite init
 
     afterEach(async () => {
+      if (pgTruncate) {
+        await pgTruncate();
+      }
       if (memory) {
         await memory.clearSession(sessionId);
         await memory.dispose();

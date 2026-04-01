@@ -2,11 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { jsonl } from "js-jsonl";
 import { InMemoryStorageAdapter } from "./in-memory.js";
-import type {
-  MessageRecord,
-  SessionEvent,
-  SessionStats,
-} from "./types.js";
+import type { MessageRecord, SessionEvent, SessionStats } from "./types.js";
 
 const MESSAGES_FILE = "messages.jsonl";
 const EVENTS_FILE = "events.jsonl";
@@ -38,7 +34,10 @@ export class FilesystemStorageAdapter extends InMemoryStorageAdapter {
       const messagesPath = path.join(dir, MESSAGES_FILE);
       try {
         const raw = await readFile(messagesPath, "utf8");
-        const rows = jsonl.parse(raw) as { runId: string | null; data: Record<string, any> }[];
+        const rows = jsonl.parse(raw) as {
+          runId: string | null;
+          data: Record<string, any>;
+        }[];
         const records: MessageRecord[] = rows.map((row) => ({
           runId: row.runId ?? null,
           data: row.data,
@@ -105,11 +104,7 @@ export class FilesystemStorageAdapter extends InMemoryStorageAdapter {
       await writeFile(path.join(dir, STATS_FILE), "{}", "utf8");
       return;
     }
-    await writeFile(
-      path.join(dir, STATS_FILE),
-      JSON.stringify(stats),
-      "utf8",
-    );
+    await writeFile(path.join(dir, STATS_FILE), JSON.stringify(stats), "utf8");
   }
 
   async appendMessage(

@@ -1,19 +1,12 @@
-name: Publish to NPM
+name: CI
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
-  workflow_dispatch:
-
-permissions:
-  id-token: write # Required for OIDC
-  contents: read
+    branches: [main]
+  pull_request:
 
 jobs:
-  publish:
+  test:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -37,7 +30,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
           cache: "yarn"
 
       - name: Install dependencies
@@ -46,13 +38,7 @@ jobs:
       - name: Build
         run: yarn build
 
-      - name: Run Tests
+      - name: Run tests
         env:
           RECOLLECT_TEST_PG_URL: postgresql://recollect:recollect@localhost:5432/recollect
         run: yarn test
-
-      - name: Publish
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
