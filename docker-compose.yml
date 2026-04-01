@@ -7,8 +7,32 @@ services:
       POSTGRES_DB: recollect
     ports:
       - "5432:5432"
+    volumes:
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U recollect -d recollect"]
       interval: 3s
       timeout: 5s
       retries: 10
+
+  postgrest:
+    image: postgrest/postgrest:v12.2.8
+    environment:
+      PGRST_DB_URI: postgres://authenticator:authenticatorsecret@postgres:5432/recollect
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+      PGRST_DB_EXTRA_SEARCH_PATH: public
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  rest-gateway:
+    image: nginx:alpine
+    ports:
+      # Avoid 54321 (common Supabase CLI local API port)
+      - "35432:80"
+    volumes:
+      - ./docker/nginx-rest.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - postgrest

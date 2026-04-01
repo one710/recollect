@@ -2,6 +2,10 @@ import type {
   PostgresStorageAdapter,
   PostgresStorageConfig,
 } from "./storage/postgres.js";
+import type {
+  SupabaseStorageAdapter,
+  SupabaseStorageConfig,
+} from "./storage/supabase.js";
 
 export type {
   MessageRecord,
@@ -9,7 +13,7 @@ export type {
   SessionEvent,
   SessionStats,
 } from "./storage/types.js";
-export type { PostgresStorageConfig };
+export type { PostgresStorageConfig, SupabaseStorageConfig };
 export { InMemoryStorageAdapter } from "./storage/in-memory.js";
 export { FilesystemStorageAdapter } from "./storage/filesystem.js";
 
@@ -23,5 +27,13 @@ export async function createPostgresStorageAdapter(
 ): Promise<PostgresStorageAdapter> {
   const { PostgresStorageAdapter: Adapter } =
     await import("./storage/postgres.js");
+  return new Adapter(config);
+}
+
+export async function createSupabaseStorageAdapter(
+  config: SupabaseStorageConfig,
+): Promise<SupabaseStorageAdapter> {
+  const { SupabaseStorageAdapter: Adapter } =
+    await import("./storage/supabase.js");
   return new Adapter(config);
 }

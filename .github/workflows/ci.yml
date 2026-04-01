@@ -5,26 +5,41 @@ on:
     branches: [main]
   pull_request:
 
+# Matches docker-compose + PostgREST JWT (Supabase local demo anon key).
+env:
+  RECOLLECT_TEST_PG_URL: postgresql://recollect:recollect@localhost:5432/recollect
+  RECOLLECT_TEST_SUPABASE_URL: http://127.0.0.1:35432
+  RECOLLECT_TEST_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: recollect
-          POSTGRES_PASSWORD: recollect
-          POSTGRES_DB: recollect
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U recollect -d recollect"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start Docker stack (Postgres + PostgREST + gateway)
+        run: docker compose up -d
+
+      - name: Wait for Postgres and REST API
+        run: |
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 5432 && nc -z 127.0.0.1 35432; then
+              break
+            fi
+            sleep 1
+          done
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "apikey: ${RECOLLECT_TEST_SUPABASE_ANON_KEY}" \
+              -H "Authorization: Bearer ${RECOLLECT_TEST_SUPABASE_ANON_KEY}" \
+              "${RECOLLECT_TEST_SUPABASE_URL}/rest/v1/messages?select=id&limit=1")
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "REST gateway did not become ready in time"
+          exit 1
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -39,6 +54,4 @@ jobs:
         run: yarn build
 
       - name: Run tests
-        env:
-          RECOLLECT_TEST_PG_URL: postgresql://recollect:recollect@localhost:5432/recollect
         run: yarn test

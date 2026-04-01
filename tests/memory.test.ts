@@ -12,6 +12,7 @@ import {
   InMemoryStorageAdapter,
   createPostgresStorageAdapter,
   createSQLiteStorageAdapter,
+  createSupabaseStorageAdapter,
 } from "../src/storage.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -47,7 +48,27 @@ const ADAPTERS = [
             return {
               adapter,
               dbPath: undefined,
-              pgTruncate: () => adapter.truncateAllForTesting(),
+              truncate: () => adapter.truncateAllForTesting(),
+            };
+          },
+        },
+      ]
+    : []),
+  ...(process.env.RECOLLECT_TEST_SUPABASE_URL &&
+  process.env.RECOLLECT_TEST_SUPABASE_ANON_KEY
+    ? [
+        {
+          name: "Supabase",
+          factory: async () => {
+            const adapter = await createSupabaseStorageAdapter({
+              url: process.env.RECOLLECT_TEST_SUPABASE_URL!,
+              anonKey: process.env.RECOLLECT_TEST_SUPABASE_ANON_KEY!,
+            });
+            await adapter.init();
+            return {
+              adapter,
+              dbPath: undefined,
+              truncate: () => adapter.truncateAllForTesting(),
             };
           },
         },
@@ -65,16 +86,16 @@ describe.each(ADAPTERS)(
     let memory: MemoryLayer;
     let adapter: any;
     let dbPath: string | undefined;
-    let pgTruncate: (() => Promise<void>) | undefined;
+    let truncateIntegration: (() => Promise<void>) | undefined;
     const sessionId = "test-session";
     beforeEach(async () => {
-      pgTruncate = undefined;
+      truncateIntegration = undefined;
       const created = await factory();
       if ("adapter" in created) {
         adapter = created.adapter;
         dbPath = created.dbPath;
-        if ("pgTruncate" in created && created.pgTruncate) {
-          pgTruncate = created.pgTruncate;
+        if ("truncate" in created && created.truncate) {
+          truncateIntegration = created.truncate;
         }
       } else {
         adapter = created;
@@ -94,8 +115,8 @@ describe.each(ADAPTERS)(
     }, 10000); // 10s for sqlite init
 
     afterEach(async () => {
-      if (pgTruncate) {
-        await pgTruncate();
+      if (truncateIntegration) {
+        await truncateIntegration();
       }
       if (memory) {
         await memory.clearSession(sessionId);
