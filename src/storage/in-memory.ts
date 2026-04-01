@@ -6,10 +6,10 @@ import type {
 } from "./types.js";
 
 export class InMemoryStorageAdapter implements MemoryStorageAdapter {
-  private sessions = new Map<string, MessageRecord[]>();
-  private stats = new Map<string, SessionStats>();
-  private events = new Map<string, SessionEvent[]>();
-  private nextEventId = 1;
+  protected sessions = new Map<string, MessageRecord[]>();
+  protected stats = new Map<string, SessionStats>();
+  protected events = new Map<string, SessionEvent[]>();
+  protected nextEventId = 1;
 
   async init(): Promise<void> {
     // No-op for in-memory adapter.

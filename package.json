@@ -54,5 +54,7 @@
       "optional": true
     }
   },
-  "dependencies": {}
+  "dependencies": {
+    "js-jsonl": "^1.1.1"
+  }
 }

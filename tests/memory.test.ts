@@ -8,10 +8,12 @@ import {
 } from "@jest/globals";
 import { MemoryLayer } from "../src/memory.js";
 import {
+  FilesystemStorageAdapter,
   InMemoryStorageAdapter,
   createSQLiteStorageAdapter,
 } from "../src/storage.js";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const ADAPTERS = [
@@ -22,6 +24,15 @@ const ADAPTERS = [
       const adapter = await createSQLiteStorageAdapter(":memory:");
       await adapter.init();
       return { adapter, dbPath: undefined };
+    },
+  },
+  {
+    name: "Filesystem",
+    factory: async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "recollect-fs-"));
+      const adapter = new FilesystemStorageAdapter(root);
+      await adapter.init();
+      return { adapter, dbPath: root };
     },
   },
 ];
@@ -66,7 +77,7 @@ describe.each(ADAPTERS)(
       }
       if (dbPath && fs.existsSync(dbPath)) {
         try {
-          fs.unlinkSync(dbPath);
+          fs.rmSync(dbPath, { recursive: true, force: true });
         } catch (e) {
           // ignore busy
         }
@@ -451,3 +462,30 @@ describe.each(ADAPTERS)(
     });
   },
 );
+
+describe("FilesystemStorageAdapter persistence", () => {
+  test("reloads messages and stats from disk after dispose and new adapter", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "recollect-fs-reload-"));
+    try {
+      const first = new FilesystemStorageAdapter(root);
+      await first.init();
+      await first.appendMessage("reload-session", null, {
+        role: "user",
+        content: "persisted",
+      });
+      await first.updateStats("reload-session", { compactionCount: 2 });
+      await first.dispose();
+
+      const second = new FilesystemStorageAdapter(root);
+      await second.init();
+      const msgs = await second.listMessages("reload-session");
+      expect(msgs.length).toBe(1);
+      expect(msgs[0]?.data.content).toBe("persisted");
+      const st = await second.getStats("reload-session");
+      expect(st.compactionCount).toBe(2);
+      await second.dispose();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
