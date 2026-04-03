@@ -1,6 +1,6 @@
 {
   "name": "@one710/recollect",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Auto-summarizing memory layer for AI agents using Node.js native SQLite.",
   "license": "MIT",
   "author": "one710",
