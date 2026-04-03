@@ -510,6 +510,52 @@ describe.each(ADAPTERS)(
   },
 );
 
+describe("MemoryLayer shouldSummarize mode", () => {
+  test("does not auto-compact when shouldSummarize returns false", async () => {
+    const summarize = jest.fn(async () => "should not run");
+    const storage = new InMemoryStorageAdapter();
+    await storage.init();
+    const mem = new MemoryLayer({
+      shouldSummarize: () => false,
+      summarize,
+      storage,
+    });
+    await mem.addMessages(
+      "sess",
+      null,
+      Array.from({ length: 10 }, (_, i) => ({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: "chunk ".repeat(30),
+      })),
+    );
+    expect(summarize).not.toHaveBeenCalled();
+    await mem.dispose();
+  });
+
+  test("auto-compacts when shouldSummarize returns true", async () => {
+    const summarize = jest.fn(async () => "checkpoint summary");
+    const storage = new InMemoryStorageAdapter();
+    await storage.init();
+    const mem = new MemoryLayer({
+      shouldSummarize: () => true,
+      summarize,
+      storage,
+      keepRecentUserTurns: 1,
+      keepRecentMessagesMin: 2,
+    });
+    await mem.addMessages(
+      "sess",
+      null,
+      Array.from({ length: 8 }, (_, i) => ({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: "chunk ".repeat(40),
+      })),
+    );
+    expect(summarize).toHaveBeenCalled();
+    await mem.dispose();
+  });
+});
+
 describe("FilesystemStorageAdapter persistence", () => {
   test("reloads messages and stats from disk after dispose and new adapter", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "recollect-fs-reload-"));

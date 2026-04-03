@@ -19,23 +19,15 @@ const DEFAULT_KEEP_RECENT_MESSAGES_MIN = 8;
 const DEFAULT_MAX_COMPACTION_PASSES = 3;
 const DEFAULT_MINIMUM_MESSAGES_TO_COMPACT = 6;
 
+export type ShouldSummarize = (messages: Record<string, any>[]) => boolean;
 export type TokenCounter = (message: Record<string, any>) => number;
 export type CompactionEventHandler = (event: CompactionEvent) => void;
 
-export interface MemoryLayerOptions {
-  /**
-   * Maximum tokens allowed in the chat history before summarization is triggered.
-   */
-  maxTokens: number;
+interface MemoryLayerOptionsBase {
   /**
    * Callback that generates a summary from rendered transcript text.
    */
   summarize: SummarizeCallable;
-  /**
-   * The percentage of maxTokens (0.0 to 1.0) that triggers auto-summarization.
-   * Defaults to 0.9.
-   */
-  threshold?: number;
   /**
    * Optional database path for default sqlite storage.
    * Defaults to 'recollect.db'.
@@ -47,20 +39,19 @@ export interface MemoryLayerOptions {
    */
   storage?: MemoryStorageAdapter;
   /**
-   * Custom token counter function.
-   * Now mandatory and accepts the entire message object.
-   */
-  countTokens: TokenCounter;
-  /**
    * Optional callback to render a message as text for summarization.
    * Defaults to JSON.stringify(message).
    */
   renderMessage?: MessageRenderer;
   /**
-   * Token target to aim for after compaction.
-   * Defaults to 65% of maxTokens.
+   * Emits diagnostics for compaction lifecycle events.
    */
-  targetTokensAfterCompaction?: number;
+  onCompactionEvent?: CompactionEventHandler;
+  /**
+   * The role to use for summary messages.
+   * Defaults to 'system'.
+   */
+  summaryRole?: string;
   /**
    * Keep at least this many recent user turns untouched.
    * Defaults to 4.
@@ -71,6 +62,38 @@ export interface MemoryLayerOptions {
    * Defaults to 8.
    */
   keepRecentMessagesMin?: number;
+}
+
+/**
+ * Custom compaction gate: when this returns true (given the full message list), the library may run
+ * summarization (subject to planning constraints). When false, no auto compaction for that history.
+ */
+export type MemoryLayerOptionsWithShouldSummarize = MemoryLayerOptionsBase & {
+  shouldSummarize: ShouldSummarize;
+};
+
+/**
+ * Token-budget compaction: requires maxTokens and countTokens; optional threshold and related tuning.
+ */
+export type MemoryLayerOptionsWithTokens = MemoryLayerOptionsBase & {
+  /**
+   * Maximum tokens allowed in the chat history before summarization is triggered.
+   */
+  maxTokens: number;
+  /**
+   * Custom token counter function (entire message object).
+   */
+  countTokens: TokenCounter;
+  /**
+   * The percentage of maxTokens (0.0 to 1.0) that triggers auto-summarization.
+   * Defaults to 0.9.
+   */
+  threshold?: number;
+  /**
+   * Token target to aim for after compaction.
+   * Defaults to 65% of maxTokens.
+   */
+  targetTokensAfterCompaction?: number;
   /**
    * Maximum compaction passes per addMessage.
    * Defaults to 3.
@@ -81,16 +104,11 @@ export interface MemoryLayerOptions {
    * Defaults to 6.
    */
   minimumMessagesToCompact?: number;
-  /**
-   * Emits diagnostics for compaction lifecycle events.
-   */
-  onCompactionEvent?: CompactionEventHandler;
-  /**
-   * The role to use for summary messages.
-   * Defaults to 'system'.
-   */
-  summaryRole?: string;
-}
+};
+
+export type MemoryLayerOptions =
+  | MemoryLayerOptionsWithShouldSummarize
+  | MemoryLayerOptionsWithTokens;
 
 interface CompactionPlan {
   head: MessageRecord[];
@@ -133,12 +151,14 @@ interface CompactOptions {
 export class MemoryLayer {
   private storage: MemoryStorageAdapter | null;
   private storageReady: Promise<void>;
+  /** User callback or synthesized from `maxTokens` / `threshold` / `countTokens`. */
+  private shouldSummarize: ShouldSummarize;
   private maxTokens: number;
   private summarize: SummarizeCallable;
   private threshold: number;
   private countTokens: TokenCounter;
   private renderMessage: MessageRenderer | undefined;
-  // @ts-ignore - targetTokensAfterCompaction is used but marked as unused in some contexts
+  /** Token-budget target after compaction (token options only); used for diagnostics. */
   private targetTokensAfterCompaction: number;
   private keepRecentUserTurns: number;
   private keepRecentMessagesMin: number;
@@ -151,14 +171,8 @@ export class MemoryLayer {
     this.storage = options.storage ?? null;
     this.storageReady = this.initializeStorage(options);
 
-    this.maxTokens = options.maxTokens;
     this.summarize = options.summarize;
-    this.threshold = options.threshold ?? DEFAULT_THRESHOLD;
-    this.countTokens = options.countTokens;
     this.renderMessage = options.renderMessage;
-    this.targetTokensAfterCompaction =
-      options.targetTokensAfterCompaction ??
-      Math.max(1, Math.floor(this.maxTokens * DEFAULT_TARGET_TOKENS_FACTOR));
     this.keepRecentUserTurns = Math.max(
       1,
       options.keepRecentUserTurns ?? DEFAULT_KEEP_RECENT_USER_TURNS,
@@ -167,16 +181,38 @@ export class MemoryLayer {
       1,
       options.keepRecentMessagesMin ?? DEFAULT_KEEP_RECENT_MESSAGES_MIN,
     );
-    this.maxCompactionPasses = Math.max(
-      1,
-      options.maxCompactionPasses ?? DEFAULT_MAX_COMPACTION_PASSES,
-    );
-    this.minimumMessagesToCompact = Math.max(
-      2,
-      options.minimumMessagesToCompact ?? DEFAULT_MINIMUM_MESSAGES_TO_COMPACT,
-    );
     this.onCompactionEvent = options.onCompactionEvent;
     this.summaryRole = options.summaryRole ?? "system";
+
+    if ("shouldSummarize" in options) {
+      this.shouldSummarize = options.shouldSummarize;
+      this.maxTokens = 0;
+      this.threshold = 0;
+      this.countTokens = (m) => JSON.stringify(m).length;
+      this.targetTokensAfterCompaction = 0;
+      this.maxCompactionPasses = DEFAULT_MAX_COMPACTION_PASSES;
+      this.minimumMessagesToCompact = Math.max(
+        2,
+        DEFAULT_MINIMUM_MESSAGES_TO_COMPACT,
+      );
+    } else {
+      this.maxTokens = options.maxTokens;
+      this.threshold = options.threshold ?? DEFAULT_THRESHOLD;
+      this.countTokens = options.countTokens;
+      this.targetTokensAfterCompaction =
+        options.targetTokensAfterCompaction ??
+        Math.max(1, Math.floor(this.maxTokens * DEFAULT_TARGET_TOKENS_FACTOR));
+      this.maxCompactionPasses = Math.max(
+        1,
+        options.maxCompactionPasses ?? DEFAULT_MAX_COMPACTION_PASSES,
+      );
+      this.minimumMessagesToCompact = Math.max(
+        2,
+        options.minimumMessagesToCompact ?? DEFAULT_MINIMUM_MESSAGES_TO_COMPACT,
+      );
+      this.shouldSummarize = (messages) =>
+        this.messageTokens(messages) >= this.compactionTriggerTokens();
+    }
   }
 
   private async ensureReady(): Promise<void> {
@@ -203,7 +239,8 @@ export class MemoryLayer {
   }
 
   /**
-   * Adds a message to the chat history and triggers auto-summarization if the threshold is reached.
+   * Adds a message to the chat history and may trigger auto-summarization when
+   * `shouldSummarize(messages)` is true (your callback or a synthetic gate from token options).
    * @param runId Optional. When provided, the message is tagged with this run; compaction will never summarize the current run's messages.
    */
   async addMessage(
@@ -222,11 +259,6 @@ export class MemoryLayer {
       },
     );
   }
-
-  /**
-   * Legacy addMessage for backward compatibility (optional but recommended to keep briefly or remove)
-   * I'll move to the new signature as requested: "people could just provide a dict ... remove the type totally"
-   */
 
   /**
    * Adds multiple messages in order and triggers compaction if needed.
@@ -319,6 +351,9 @@ export class MemoryLayer {
   }
 
   private compactionTriggerTokens(): number {
+    if (this.maxTokens <= 0) {
+      return 0;
+    }
     return Math.max(1, Math.floor(this.maxTokens * this.threshold));
   }
 
@@ -407,16 +442,15 @@ export class MemoryLayer {
     const history = await this.requireStorage().listMessages(sessionId);
     const historyMessages = this.recordsToMessages(history);
     await this.ensureCanonicalContextSnapshot(sessionId, historyMessages);
-    const tokenCount = this.messageTokens(historyMessages);
-    if (tokenCount < this.compactionTriggerTokens()) {
+    if (!this.shouldSummarize(historyMessages)) {
       return;
     }
     await this.compactSession(sessionId, history, {
       mode: "ingest",
       reason:
         messages.length === 1
-          ? "threshold_reached_after_add_message"
-          : "threshold_reached_after_add_messages",
+          ? "ingest_after_add_message"
+          : "ingest_after_add_messages",
       force: false,
       ...(runId != null ? { currentRunId: runId } : {}),
     });
@@ -522,14 +556,14 @@ export class MemoryLayer {
 
     const triggerTokens = this.compactionTriggerTokens();
     const initialTokens = this.messageTokens(historyMessages);
-    if (!options.force && initialTokens < triggerTokens) {
+    if (!options.force && !this.shouldSummarize(historyMessages)) {
       await this.appendEvent({
         sessionId,
         type: "compaction_skipped",
         payload: {
           mode: options.mode,
           reason: options.reason,
-          cause: "below_trigger",
+          cause: "compact_gate_false",
           initialTokens,
           triggerTokens,
         },
@@ -552,7 +586,7 @@ export class MemoryLayer {
 
     while (passes < this.maxCompactionPasses) {
       const beforeTokens = this.messageTokens(historyMessages);
-      if (!options.force && beforeTokens < triggerTokens) {
+      if (!options.force && !this.shouldSummarize(historyMessages)) {
         return;
       }
 
@@ -599,7 +633,6 @@ export class MemoryLayer {
       const nextHistoryMessages = this.recordsToMessages(nextHistory);
       const afterTokens = this.messageTokens(nextHistoryMessages);
 
-      // Abort if compaction does not reduce prompt size.
       if (afterTokens >= beforeTokens) {
         await this.appendEvent({
           sessionId,
@@ -646,7 +679,7 @@ export class MemoryLayer {
         payload: diagnostic as unknown as Record<string, unknown>,
       });
 
-      if (afterTokens <= this.targetTokensAfterCompaction) {
+      if (!this.shouldSummarize(nextHistoryMessages)) {
         return;
       }
     }
